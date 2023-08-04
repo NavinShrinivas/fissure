@@ -6,40 +6,13 @@
     - To move away from serde_bencoded to writing a parser from scratch
 */
 
-use serde::{Deserialize, Serialize};
 use serde_bencoded::from_bytes;
-use std::error::Error;
-use std::fmt;
 use std::fs::File;
 use std::io::Read;
-
-// If I'd have to match to a different name
-// #[serde(rename = "piece length")]
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct FileInfo {
-    length: u64,       // Size of each file
-    path: Vec<String>, // Path of the file, not sure if relative or not. Should be parseable by PathBuf
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Info {
-    //In the single file case, the name key is the name of a file, in the muliple file case, it's the name of a directory.
-    name: String, // The file name/path to store...only reccomended
-    #[serde(rename = "piece length")]
-    piece_length: u64, //Size of each piece the file is split into
-    #[serde(rename = "pieces")]
-    #[serde(with = "serde_bytes")]
-    pieces_hash: Vec<u8>, // SHA-1 of all the piece stiched together, each sha-1 is 20 in length
-    length: Option<u64>, // Exists only for single file downloads, tells length of file
-    files: Option<Vec<FileInfo>>, // Exists only if multi file downloads
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct MetaInfo {
-    announce: String, // Contains the url for the tracker
-    info: Info,
-}
+use std::path::PathBuf;
+use crate::models::torrent_meta::{MetaInfo, FileInfo};
+use std::fmt;
+use std::error::Error;
 
 #[derive(Debug)]
 pub struct BeeDecoderErr {
@@ -55,6 +28,29 @@ impl fmt::Display for BeeDecoderErr {
 impl Error for BeeDecoderErr {}
 
 impl MetaInfo {
+    pub fn files(&self) -> Vec<FileInfo> {
+        let files = if self.info.length.is_some() {
+            vec![FileInfo {
+                length: self.info.length.unwrap(),
+                path: vec![self.info.name.clone()],
+            }]
+        } else {
+            self.info.files.clone().unwrap()
+        };
+        return files;
+    }
+    pub fn print_files(&self) {
+        let files = self.files();
+        for (index, content) in files.iter().enumerate() {
+            let path_buf: PathBuf = content.path.iter().collect();
+            println!(
+                "\t\t {}. path : {:?}, size :{} MB",
+                index + 1,
+                path_buf,
+                content.length / 1000000
+            );
+        }
+    }
     pub fn new(torrent_file_path: &str) -> Result<MetaInfo, BeeDecoderErr> {
         let mut torrent_file = match File::open(torrent_file_path) {
             Ok(f) => f,
@@ -91,17 +87,10 @@ impl MetaInfo {
         //Debug print :
         // println!("{:#?}", meta_info);
         println!("Adding the following torrent to list : ");
-        println!("name : {:?}", meta_info.info.name);
-        println!("announce url : {:?}", meta_info.announce);
-        let files = if meta_info.info.length.is_some() {
-            vec![FileInfo {
-                length: meta_info.info.length.unwrap(),
-                path: vec![meta_info.info.name.clone()],
-            }]
-        } else {
-            meta_info.info.files.clone().unwrap()
-        };
-        println!("file : {:?}", files);
+        println!("\t name : {:?}", meta_info.info.name);
+        println!("\t announce url : {:?}", meta_info.announce);
+        println!("\t files :");
+        meta_info.print_files();
         return Ok(meta_info);
     }
 }

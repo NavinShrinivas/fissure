@@ -1,12 +1,24 @@
 mod bee_processor;
-use bee_processor::bee_decoder;
+mod models;
+mod protcols;
+mod helper;
 
-fn main() {
+use models::*;
+
+pub struct ClientEnv{
+    pub version : String, //Has to be 4 char long 0001(0.0.1), 0010(0.1.0)...
+    pub port : String
+}
+
+#[tokio::main]
+async fn main() {
     println!("Hello, world. Starting fissure client!");
-    let torrent_meta_info = match bee_decoder::MetaInfo::new("../test_torrent_files/test.torrent"){
-        Ok(meta) => meta,
-        Err(e) =>{
-            panic!("{:?}",e);
-        }
+    let client_env = ClientEnv{
+        version : "0001".to_string(),
+        port : "6001".to_string(),
     };
+    let mut client_state = models::client_meta::ClientState::new_client(client_env);
+    client_state.add_torrent_using_file_path("../test_torrent_files/test.torrent".to_string());
+    println!("{:?}",protcols::tracker::refresh_peer_list_from_tracker(client_state.torrents_raw.get(0).unwrap(), &client_state).await);
+    
 }
