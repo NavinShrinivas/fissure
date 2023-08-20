@@ -6,13 +6,13 @@
     - To move away from serde_bencoded to writing a parser from scratch
 */
 
+use crate::models::torrent_meta::MetaInfo;
+use crate::models::torrent_meta::TrackerReponse;
 use serde_bencoded::from_bytes;
+use std::error::Error;
+use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use std::path::PathBuf;
-use crate::models::torrent_meta::{MetaInfo, FileInfo};
-use std::fmt;
-use std::error::Error;
 
 #[derive(Debug)]
 pub struct BeeDecoderErr {
@@ -28,29 +28,6 @@ impl fmt::Display for BeeDecoderErr {
 impl Error for BeeDecoderErr {}
 
 impl MetaInfo {
-    pub fn files(&self) -> Vec<FileInfo> {
-        let files = if self.info.length.is_some() {
-            vec![FileInfo {
-                length: self.info.length.unwrap(),
-                path: vec![self.info.name.clone()],
-            }]
-        } else {
-            self.info.files.clone().unwrap()
-        };
-        return files;
-    }
-    pub fn print_files(&self) {
-        let files = self.files();
-        for (index, content) in files.iter().enumerate() {
-            let path_buf: PathBuf = content.path.iter().collect();
-            println!(
-                "\t\t {}. path : {:?}, size :{} MB",
-                index + 1,
-                path_buf,
-                content.length / 1000000
-            );
-        }
-    }
     pub fn new(torrent_file_path: &str) -> Result<MetaInfo, BeeDecoderErr> {
         let mut torrent_file = match File::open(torrent_file_path) {
             Ok(f) => f,
@@ -92,5 +69,17 @@ impl MetaInfo {
         println!("\t files :");
         meta_info.print_files();
         return Ok(meta_info);
+    }
+}
+
+impl TrackerReponse {
+    pub fn from_raw_text_response_body(raw_text: String) -> Result<TrackerReponse, BeeDecoderErr> {
+        match serde_bencoded::from_str(&raw_text.to_string()) {
+            Ok(res) => Ok(res),
+            Err(e) => Err(BeeDecoderErr {
+                error_string: "Error decoding tracker response from bencoding.".to_string()
+                    + &e.to_string(),
+            }),
+        }
     }
 }
