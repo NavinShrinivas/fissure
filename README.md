@@ -7,6 +7,12 @@
 ### SDLC : 
 - A highy iterative approach 
 
-### Status : 
+### Status (going downward, kinda like a road map): 
 - Inital project is the torrent client, may create the tracker server if we get the client running well :)
 - Far from completion, WIP. Tracker protocols are complete. Peer protocols are next up.
+- peer hanshake is done next up : 
+    - tcp time outs 
+    - error handling (deperately needed)
+    - selective logging (very much needed)
+    - the crux of this project : THE peer protocol
+    - Cleaning up of dependencies, they are really bloated.

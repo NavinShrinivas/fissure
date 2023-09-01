@@ -76,14 +76,14 @@ impl MetaInfo {
   #[serde(alias = "name")]
     Deserialize this field from the given name or from its Rust name. May be repeated to specify multiple possible names for the same field.
 */
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Peer {
     #[serde(alias = "peer id", alias = "peer_id")]
     pub peer_id: Option<String>,
     pub ip: String, //Can be ipv4, ipv6 or domain name. need to parse that later.
     pub port: i32,
 }
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TrackerReponse {
     #[serde(alias = "failure reason", alias = "failure_reason")]
     pub failure_reason: Option<String>,
@@ -102,8 +102,7 @@ pub struct TrackerRequest {
 }
 impl TrackerRequest {
     pub fn generate_query_string(&self) -> String {
-
-        let mut t_string : String;
+        let mut t_string: String;
         t_string = format!(
             "info_hash={}",
             urlencoding::encode_binary(self.info_hash.as_slice())
@@ -115,11 +114,7 @@ impl TrackerRequest {
             urlencoding::encode(&self.peer_id)
         );
 
-        t_string = format!(
-            "{}&port={}",
-            t_string,
-            urlencoding::encode(&self.port)
-        );
+        t_string = format!("{}&port={}", t_string, urlencoding::encode(&self.port));
         t_string = format!(
             "{}&uploaded={}",
             t_string,
@@ -132,14 +127,9 @@ impl TrackerRequest {
             urlencoding::encode(&self.downloaded)
         );
 
-        t_string = format!(
-            "{}&left={}",
-            t_string,
-            urlencoding::encode(&self.left)
-        );
+        t_string = format!("{}&left={}", t_string, urlencoding::encode(&self.left));
 
         return t_string;
-
     }
 }
 //==================================================

@@ -1,6 +1,7 @@
 use super::torrent_meta::MetaInfo;
-use crate::models::torrent_meta::Peer;
 use crate::helper;
+use crate::models::torrent_meta::Peer;
+use crate::models::torrent_meta::TrackerReponse;
 use crate::ClientEnv;
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
@@ -33,26 +34,26 @@ impl ClientState {
                 panic!("{}", e);
             }
         };
-        let transformed_torrent_meta =
-            ClientTorrentMeta::from_torrent_file_meta(torrent_meta_file);
+        let transformed_torrent_meta = ClientTorrentMeta::from_torrent_file_meta(torrent_meta_file);
         self.torrents.push(transformed_torrent_meta);
     }
     #[allow(dead_code)]
     pub fn add_torrent_from_meta_info(&mut self, torrent_meta_file: MetaInfo) {
-        let transformed_torrent_meta =
-            ClientTorrentMeta::from_torrent_file_meta(torrent_meta_file);
+        let transformed_torrent_meta = ClientTorrentMeta::from_torrent_file_meta(torrent_meta_file);
         self.torrents.push(transformed_torrent_meta);
     }
 }
 
 /// Client file transformation, let's represent single and multiple files in standard way.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct LocalFile {
     path: PathBuf,
-    size: u64, 
+    size: u64,
 }
 
 /// Contains all the torrent info that is transformed for easier client interactions
+#[derive(Clone)]
 pub struct ClientTorrentMeta {
     // All file sizes in this struct are in bytes, file sizes in LocalFile are in mb
     pub raw_torrent: MetaInfo,
@@ -62,9 +63,13 @@ pub struct ClientTorrentMeta {
     pub info_hash: [u8; 20],
     pub left: String,
     pub peers: Option<Vec<Peer>>,
+    pub tracker_response : Option<TrackerReponse>
 }
 
 impl ClientTorrentMeta {
+    pub fn add_peer_list_from_tracker_response(&mut self, tracker_response: TrackerReponse) {
+        self.peers = tracker_response.peers;
+    }
     pub fn from_torrent_file_meta(torrent_file_meta: MetaInfo) -> ClientTorrentMeta {
         let mut client_files: Vec<LocalFile> = Vec::new();
         let files = torrent_file_meta.files();
@@ -91,7 +96,8 @@ impl ClientTorrentMeta {
             info_hash: info_hash.into(),
             left: torrent_file_meta.download_size().to_string(),
             raw_torrent: torrent_file_meta,
-            peers : None,
+            peers: None,
+            tracker_response : None
         };
     }
 }

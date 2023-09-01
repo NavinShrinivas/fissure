@@ -4,6 +4,8 @@ use crate::models::torrent_meta::{TrackerReponse, TrackerRequest};
 use reqwest;
 use std::error::Error;
 use std::fmt;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Debug)]
 pub struct TrackerRequestErr {
@@ -24,9 +26,12 @@ impl fmt::Display for TrackerRequestErr {
 impl Error for TrackerRequestErr {}
 // Needs rafactor to be able to run with only ClientState and for all torrents
 pub async fn refresh_peer_list_from_tracker(
-    client_torrent_meta: &ClientTorrentMeta,
-    client_state: &ClientState,
+    working_torrent: usize,
+    client_state_arc: Arc<RwLock<ClientState>>,
 ) -> Result<TrackerReponse, TrackerRequestErr> {
+    let client_state = client_state_arc.read().await;
+    let client_torrent_meta: &ClientTorrentMeta =
+        client_state.torrents.get(working_torrent).unwrap();
     let req = TrackerRequest {
         info_hash: client_torrent_meta.info_hash,
         peer_id: client_state.peer_id.clone(),
@@ -52,6 +57,6 @@ pub async fn refresh_peer_list_from_tracker(
         .expect("Error opening body from response, maybe connection got interrupted.");
 
     let tracker_response = TrackerReponse::from_raw_text_response_body(raw_body);
+    println!("here");
     return Ok(tracker_response.unwrap());
-
 }
