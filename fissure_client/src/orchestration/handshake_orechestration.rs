@@ -18,7 +18,12 @@ pub async fn handshake_orchestrator(
                                                  //[BAD CODE] Need to somehow time its starting
                                                  //with recv
     loop {
-        let delta_tracker_response = peers_rs.recv().await.unwrap();
+        let delta_tracker_response = match peers_rs.recv().await {
+            Some(resp) => resp,
+            None => {
+                panic!("Send sink closed before recv sink in torrent-handshake channel.");
+            }
+        };
         for i in delta_tracker_response.peers.unwrap() {
             let inner_arc = Arc::clone(&client_state);
             tokio::spawn(async move {

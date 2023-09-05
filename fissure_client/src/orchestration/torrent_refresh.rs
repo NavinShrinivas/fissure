@@ -23,23 +23,60 @@ pub async fn torrent_refresh(
         .await;
 
         let mut cs = client_state.write().await;
-        let client_torrent_meta: &mut ClientTorrentMeta =
-            cs.torrents.get_mut(working_torrent).unwrap();
+        let client_torrent_meta: &mut ClientTorrentMeta = match cs.torrents.get_mut(working_torrent)
+        {
+            Some(ctm) => ctm,
+            None => {
+                panic!("Wrong torrent index being fed into orchestrators...");
+            }
+        };
         if client_torrent_meta.tracker_response.is_none() {
-
             // println!("{:?}", tracker_response);
-            client_torrent_meta.tracker_response = Some(tracker_response.unwrap());
-            peer_sender.send(client_torrent_meta.tracker_response.clone().unwrap()).await;
-
+            client_torrent_meta.tracker_response = Some(match tracker_response {
+                Ok(value) => value,
+                Err(e) => {
+                    println!("{:?}", e.to_string());
+                    return;
+                }
+            });
+            let _ = peer_sender
+                .send(match client_torrent_meta.tracker_response.clone() {
+                    Some(tracker_response) => tracker_response,
+                    None => {
+                        println!("Tracker did not return back any response...");
+                        return;
+                    }
+                })
+                .await;
         } else {
-            let old_peers = client_torrent_meta
-                .tracker_response
-                .as_ref()
-                .unwrap()
-                .peers
-                .clone()
-                .unwrap();
-            let new_resp = tracker_response.as_ref().unwrap().peers.clone().unwrap();
+            let old_peers = match client_torrent_meta.tracker_response.as_ref() {
+                Some(t_resp) => match t_resp.peers.clone() {
+                    Some(peers) => peers,
+                    None => {
+                        println!("Old check, Tracker returned a response, but no peers...qutting");
+                        return;
+                    }
+                },
+                None => {
+                    println!("Old check, Tracker did not return back any respons...quitting");
+                    return;
+                }
+            };
+            let new_resp = match tracker_response.as_ref() {
+                Ok(t_resp) => match t_resp.peers.clone() {
+                    Some(peers) => peers,
+                    None => {
+                        println!("New, Tracker returned a response, but no peers...qutting");
+                        return;
+                    }
+                },
+                Err(e) => {
+                    println!("New, Tracker did not return back any respons...quitting");
+                    println!("{:?}", e.to_string());
+                    return;
+                }
+            };
+
             let mut new_peer: Vec<Peer> = Vec::new();
             for i in new_resp.iter() {
                 if old_peers.contains(&i) == false {
@@ -47,8 +84,15 @@ pub async fn torrent_refresh(
                 }
             }
 
-            client_torrent_meta.tracker_response = Some(tracker_response.unwrap());
-            peer_sender
+            client_torrent_meta.tracker_response = Some(match tracker_response{
+                Ok(v) => v,
+                Err(e) =>{
+                    println!("New, Tracker did not return back any respons...quitting");
+                    println!("{:?}", e.to_string());
+                    return;
+                }
+            });
+            let _ = peer_sender
                 .send(TrackerReponse {
                     failure_reason: None,
                     interval: None,
@@ -58,9 +102,16 @@ pub async fn torrent_refresh(
         }
 
         let secs = match client_torrent_meta.tracker_response.clone() {
-            Some(internal) => internal.interval.unwrap(),
+            Some(internal) => match internal.interval{
+                Some(interval) => interval,
+                None => {
+                    println!("Tracker did not send back any interval time...defaulting to 900 seconds.");
+                    900
+                }
+            },
             None => {
-                panic!("Tracker did not return back any response...")
+                println!("Tracker did not return back any response...quitting");
+                return;
             }
         };
         println!("Sleeping for  : {} secconds", secs);
