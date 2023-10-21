@@ -12,8 +12,8 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
         .await
         .add_torrent_using_file_path(torrent_file_path.to_string());
 
-    //Response from trackers cannot have more than 300 peers
     println!("{}", client_state.read().await.torrents.len());
+    //Response from trackers cannot have more than 300 peers
     let (peer_tracker_handshake_channel_tx, peer_tracker_handshake_channel_rx) = mpsc::channel(300);
 
     let inner_arc = Arc::clone(&client_state);

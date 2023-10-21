@@ -8,6 +8,7 @@ use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 enum MessageID {
@@ -39,16 +40,33 @@ impl MessageID {
 }
 
 /// Should be sent into future workers along with channels for piece_work
+/// Also holds metadata about each connection, We need to build out an FSM out of this state.
+/// Client - Us | Remote Peer - Others
 pub struct PeerConnection {
     conn: TcpStream,
-    choked: bool,
     bitfield: Vec<String>, // 0 for not available, 1 for avail. Using Strings we can avoid some bit
     // manip logic
     info_hash: [u8; 20],
     peer_id: Option<String>,
+    am_choking: bool,
+    am_interested: bool,
+    peer_choking: bool,
+    peer_interested: bool,
 }
 
 impl PeerConnection {
+    pub fn init_connection(c: TcpStream, ih: [u8; 20], pi: Option<String>) -> Self {
+        PeerConnection {
+            conn: c,
+            bitfield: Vec::new(),
+            info_hash: ih,
+            peer_id: pi,
+            am_choking: true,
+            peer_choking: true,
+            peer_interested: false,
+            am_interested: false,
+        }
+    }
     pub async fn peer_connection_from_peer_meta(
         peer_meta: &Peer,
         working_torrent: usize,
@@ -63,7 +81,7 @@ impl PeerConnection {
         // 19 decimal in hex : 0x13
         handshake_str = format!("{}{}", handshake_str, "13");
         handshake_str = format!("{}{}", handshake_str, hex::encode("BitTorrent protocol"));
-        println!("{:?}", peer_meta);
+        // println!("{:?}", peer_meta);
         // 8 bytes being 0 in hex is 16 0's
         handshake_str = format!("{}{}", handshake_str, "0000000000000000");
         handshake_str = format!(
@@ -76,37 +94,39 @@ impl PeerConnection {
             handshake_str,
             hex::encode(client_state.peer_id.clone())
         );
-        println!("{}", handshake_str);
+        // println!("{}", handshake_str);
         match TcpStream::connect(format!("{}:{}", peer_meta.ip, peer_meta.port)) {
             Ok(mut stream) => {
-                println!("Successfully connected to server in port 3333");
+                // println!("Successfully connected to server in port 3333");
                 stream
                     .write(hex::decode(handshake_str).unwrap().as_slice())
                     .unwrap();
-                println!("Sent handshake...");
+                // println!("Sent handshake...");
                 let mut data = [0; 1];
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .expect("Error setting timeout on TCP buffer read.");
                 match stream.read_exact(&mut data) {
                     Ok(_) => {
                         let pstr_len = Cursor::new(data).read_u8().unwrap() as usize;
-                        println!("handling handshake response...{}", pstr_len);
+                        // println!("handling handshake response...{}", pstr_len);
                         if pstr_len != 0 {
                             let mut data = vec![0u8; 48 + pstr_len];
                             stream.read(&mut data);
-                            println!(
-                                "infohash : {:?}",
-                                hex::encode(&data[pstr_len + 8..pstr_len + 8 + 20])
-                            );
-                            println!("peerid : {:?}", hex::encode(&data[pstr_len + 8 + 20..]));
+                            // println!(
+                            //     "infohash : {:?}",
+                            //     hex::encode(&data[pstr_len + 8..pstr_len + 8 + 20])
+                            // );
+                            let res_peer_id = String::from_utf8(data[pstr_len + 8 + 20..].to_vec()).unwrap_or("".to_string());
+                            // if peer_meta.peer_id != Some(res_peer_id.clone()){
+                            //     stream.shutdown(std::net::Shutdown::Both);
+                            //     panic!("Invalid peer id, aborting connection.")
+                            // }
+                            println!("Connected to : {:?}",res_peer_id );
                         } else {
                             panic!("Message length should not be 0...");
                         }
-                        return PeerConnection {
-                            conn: stream,
-                            choked: true,
-                            bitfield: Vec::new(),
-                            info_hash: client_torrent_meta.info_hash,
-                            peer_id: peer_meta.peer_id.clone(),
-                        };
+                        return PeerConnection::init_connection(stream, client_torrent_meta.info_hash,peer_meta.peer_id.clone());
                     }
                     Err(e) => {
                         panic!("Failed to receive data: {}", e);
