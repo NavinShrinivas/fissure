@@ -8,7 +8,8 @@ use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 enum MessageID {
@@ -43,28 +44,29 @@ impl MessageID {
 /// Also holds metadata about each connection, We need to build out an FSM out of this state.
 /// Client - Us | Remote Peer - Others
 pub struct PeerConnection {
-    conn: TcpStream,
-    bitfield: Vec<String>, // 0 for not available, 1 for avail. Using Strings we can avoid some bit
-    // manip logic
-    info_hash: [u8; 20],
-    peer_id: Option<String>,
-    am_choking: bool,
-    am_interested: bool,
-    peer_choking: bool,
-    peer_interested: bool,
+    pub conn: TcpStream,
+    pub bitfield: Vec<String>, // 0 for not available, 1 for avail. Using Strings we can avoid some bit
+    pub info_hash: [u8; 20],
+    pub peer_id: Option<String>,
+    pub am_choking: bool,
+    pub am_interested: bool,
+    pub peer_choking: bool,
+    pub peer_interested: bool,
+    pub keep_alive: Instant,
 }
 
 impl PeerConnection {
-    pub fn init_connection(c: TcpStream, ih: [u8; 20], pi: Option<String>) -> Self {
+    pub fn init_connection(c: TcpStream, ih: [u8; 20], pi: Option<String>, bitfield_size : u64) -> Self {
         PeerConnection {
             conn: c,
-            bitfield: Vec::new(),
+            bitfield: vec!["0".to_string(); (((bitfield_size/8) as f64).ceil()*8.0) as usize],
             info_hash: ih,
             peer_id: pi,
             am_choking: true,
             peer_choking: true,
             peer_interested: false,
             am_interested: false,
+            keep_alive: Instant::now(),
         }
     }
     pub async fn peer_connection_from_peer_meta(
@@ -73,6 +75,7 @@ impl PeerConnection {
         client_state_arc: Arc<RwLock<ClientState>>,
     ) -> Self {
         //Pretty much does handshake
+        println!("connecting..");
         let client_state = client_state_arc.read().await;
         let client_torrent_meta: &ClientTorrentMeta =
             client_state.torrents.get(working_torrent).unwrap();
@@ -112,21 +115,27 @@ impl PeerConnection {
                         // println!("handling handshake response...{}", pstr_len);
                         if pstr_len != 0 {
                             let mut data = vec![0u8; 48 + pstr_len];
-                            stream.read(&mut data);
+                            stream.read(&mut data).unwrap();
                             // println!(
                             //     "infohash : {:?}",
                             //     hex::encode(&data[pstr_len + 8..pstr_len + 8 + 20])
                             // );
-                            let res_peer_id = String::from_utf8(data[pstr_len + 8 + 20..].to_vec()).unwrap_or("".to_string());
+                            let res_peer_id = String::from_utf8(data[pstr_len + 8 + 20..].to_vec())
+                                .unwrap_or("".to_string());
                             // if peer_meta.peer_id != Some(res_peer_id.clone()){
                             //     stream.shutdown(std::net::Shutdown::Both);
                             //     panic!("Invalid peer id, aborting connection.")
                             // }
-                            println!("Connected to : {:?}",res_peer_id );
+                            println!("Connected to : {:?}", res_peer_id);
                         } else {
                             panic!("Message length should not be 0...");
                         }
-                        return PeerConnection::init_connection(stream, client_torrent_meta.info_hash,peer_meta.peer_id.clone());
+                        return PeerConnection::init_connection(
+                            stream,
+                            client_torrent_meta.info_hash,
+                            peer_meta.peer_id.clone(),
+                            client_torrent_meta.raw_torrent.info.length.unwrap()/client_torrent_meta.raw_torrent.info.piece_length
+                        );
                     }
                     Err(e) => {
                         panic!("Failed to receive data: {}", e);

@@ -71,7 +71,7 @@ pub async fn torrent_refresh(
                     }
                 },
                 Err(e) => {
-                    println!("New, Tracker did not return back any respons...quitting");
+                    println!("New, Tracker did not return back any response...quitting");
                     println!("{:?}", e.to_string());
                     return;
                 }
