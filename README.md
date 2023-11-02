@@ -1,4 +1,4 @@
-## Fissure : A toolset for bittorrent
+## Fissure : A toolset for bittorrent | VERY BIG WIP
 
 ### Specs : 
 - The BEP protocol : https://www.bittorrent.org/beps/bep_0000.html
