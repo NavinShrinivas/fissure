@@ -1,18 +1,26 @@
+use crate::models::torrent_jobs;
 use crate::protocols::peer_handshake::PeerConnection;
 use byteorder;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
+use crossbeam_channel;
 use std::io::Cursor;
 use std::io::Read;
 use std::time::Duration;
+use to_binary;
 
-pub fn state_machine(mut conn: PeerConnection) {
+pub fn state_machine(
+    mut conn: PeerConnection,
+    unfinished_job_recv: crossbeam_channel::Receiver<torrent_jobs::Job>,
+    unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
+) {
     let mut data = [0; 4];
     let mut stream = conn.conn;
     let mut pipelined = 0;
-    let mut have_piece = false;
     loop {
-        println!("Running state machine");
+        if conn.peer_choking == false && pipelined < 5 {
+            pipelined += 1;
+        }
         if conn.keep_alive.elapsed() > Duration::new(120, 0) {
             // Duration has PartialEq
             stream.shutdown(std::net::Shutdown::Both).unwrap();
@@ -62,7 +70,7 @@ pub fn state_machine(mut conn: PeerConnection) {
                         5 => {
                             // Bitfield
                             let rem_len = msg_len - 2;
-                            if rem_len*8 != conn.bitfield.len().try_into().unwrap() {
+                            if rem_len * 8 != conn.bitfield.len().try_into().unwrap() {
                                 panic!(
                                     "Something wrong, bitfield is not of right size {} {}",
                                     rem_len,
@@ -74,19 +82,21 @@ pub fn state_machine(mut conn: PeerConnection) {
                             Cursor::new(data)
                                 .read_to_string(&mut zero_based_index)
                                 .unwrap();
-                            for (index, val) in zero_based_index.chars().enumerate() {
+                            for (index, val) in to_binary::BinaryString::from(zero_based_index)
+                                .to_string()
+                                .chars()
+                                .enumerate()
+                            {
                                 let mut_value = conn.bitfield.get_mut(index).unwrap();
                                 *mut_value = val.to_string();
                             }
-                            println!("bitfield")
+                            println!("bitfield recvd...")
                         }
                         6 => {
                             // For future expansion, to uploading capabilties at the moment
-                            continue
+                            continue;
                         }
-                        7 => {
-
-                        }
+                        7 => {}
                         _ => {
                             // println!("Something else {}", id);
                             continue;

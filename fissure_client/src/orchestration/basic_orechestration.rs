@@ -1,7 +1,9 @@
 use crate::models::client_meta::ClientState;
+use crate::models::torrent_jobs;
 use crate::orchestration::handshake_orechestration;
 use crate::orchestration::torrent_refresh;
-use async_channel;
+use crate::orchestration::job_orchestrator;
+use crossbeam_channel;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
@@ -24,6 +26,8 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
     // For future
 
     let inner_arc = Arc::clone(&client_state);
+    let inner_arc_2 = Arc::clone(&client_state);
+    let inner_arc_3 = Arc::clone(&client_state);
     tokio::spawn(async move {
         torrent_refresh::torrent_refresh(
             already_present_torrents,
@@ -32,7 +36,11 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
         )
         .await;
     });
-
+    let (unfinished_job_snd, unfinished_job_recv) =
+        crossbeam_channel::unbounded::<torrent_jobs::Job>();
+    let (finised_job_snd, finished_job_recv) = crossbeam_channel::unbounded::<torrent_jobs::Job>();
+    let (s1, r1) = (unfinished_job_snd.clone(), unfinished_job_recv.clone());
+    let s2 = unfinished_job_snd.clone();
     tokio::spawn(async move {
         // Handshake Orchestration initiates connect and spawns a thread for each connection on a
         // State Machine type processor with input from MPMC consumer side.
@@ -40,9 +48,14 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
         handshake_orechestration::handshake_orchestrator(
             peer_tracker_handshake_channel_rx,
             already_present_torrents,
-            Arc::clone(&client_state),
+            inner_arc_2,
+            s1,
+            r1
         )
         .await;
+    });
+    tokio::spawn(async move{
+        job_orchestrator::job_orchestrator(s2,already_present_torrents,inner_arc_3).await
     });
     loop { //[BAD CODE] Need to use waitgroups
          //psueod await, lmao very debuggy bad code
