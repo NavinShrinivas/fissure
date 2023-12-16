@@ -78,7 +78,9 @@ pub async fn job_orchestrator(
 ) {
     // Needs to determines chunks from pieces and send it across channel
     // Processing to create a "state" of all possible chunks
+    println!("debug : starting job orchestration");
     let read_client_state = client_state.read().await;
+    println!("debug : Able to read access client state.");
     let raw_torrent = &read_client_state
         .torrents
         .get(torrent_index)

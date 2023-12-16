@@ -9,6 +9,15 @@ use std::io::Read;
 use std::time::Duration;
 use to_binary;
 
+fn generate_piece_request(job: torrent_jobs::Job) -> String {
+    let mut request_str: String = String::new();
+    request_str = format!("{}{}", request_str, "D6");
+    request_str = format!("{}{}", request_str, hex::encode(job.index.to_string()));
+    request_str = format!("{}{}", request_str, hex::encode(job.begin.to_string()));
+    request_str = format!("{}{}", request_str, hex::encode(job.length.to_string()));
+    return request_str;
+}
+
 pub fn state_machine(
     mut conn: PeerConnection,
     unfinished_job_recv: crossbeam_channel::Receiver<torrent_jobs::Job>,
@@ -17,9 +26,19 @@ pub fn state_machine(
     let mut data = [0; 4];
     let mut stream = conn.conn;
     let mut pipelined = 0;
+    println!("Starting protocol state machine");
     loop {
         if conn.peer_choking == false && pipelined < 5 {
             pipelined += 1;
+            let job = unfinished_job_recv.recv().unwrap();
+            if conn.bitfield.get(job.index as usize).unwrap() != "1" {
+                tokio::spawn(async move {
+                    unfinished_job_snd.send(job).unwrap();
+                });
+                return;
+            }
+            let request_str = generate_piece_request(job);
+            println!("{}", request_str)
         }
         if conn.keep_alive.elapsed() > Duration::new(120, 0) {
             // Duration has PartialEq

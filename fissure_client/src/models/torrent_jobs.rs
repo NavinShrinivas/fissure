@@ -1,11 +1,11 @@
 use crate::orchestration::job_orchestrator::{Chunk, PieceProcess};
 
 pub struct Job {
-    index: u64,
-    begin: u64,
-    length: u64,
+    pub index: u64,
+    pub begin: u64,
+    pub length: u64,
     /// Needs to be in bytes
-    chunks: Vec<u8>, // We default to 16KB blocks!
+    pub chunks: Vec<u8>, // We default to 16KB blocks!
 }
 
 impl Job {

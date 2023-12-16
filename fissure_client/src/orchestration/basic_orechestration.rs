@@ -1,10 +1,11 @@
 use crate::models::client_meta::ClientState;
 use crate::models::torrent_jobs;
 use crate::orchestration::handshake_orechestration;
-use crate::orchestration::torrent_refresh;
 use crate::orchestration::job_orchestrator;
+use crate::orchestration::torrent_refresh;
 use crossbeam_channel;
 use std::sync::Arc;
+use std::{thread, time};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
@@ -16,7 +17,7 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
         .await
         .add_torrent_using_file_path(torrent_file_path.to_string());
 
-    println!("{}", client_state.read().await.torrents.len());
+    println!("debug : {}", client_state.read().await.torrents.len());
     //Response from trackers cannot have more than 300 peers
     let (peer_tracker_handshake_channel_tx, peer_tracker_handshake_channel_rx) = mpsc::channel(300);
 
@@ -50,12 +51,16 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
             already_present_torrents,
             inner_arc_2,
             s1,
-            r1
+            r1,
         )
         .await;
     });
-    tokio::spawn(async move{
-        job_orchestrator::job_orchestrator(s2,already_present_torrents,inner_arc_3).await
+
+    thread::sleep(time::Duration::from_secs(10)); // trying to avoid race between write and read
+                                                  // lock on client state, HORRIBLE CODING...I HOPE
+                                                  // TO GOD I FIX THIS PROPERLY.
+    tokio::spawn(async move {
+        job_orchestrator::job_orchestrator(s2, already_present_torrents, inner_arc_3).await
     });
     loop { //[BAD CODE] Need to use waitgroups
          //psueod await, lmao very debuggy bad code
