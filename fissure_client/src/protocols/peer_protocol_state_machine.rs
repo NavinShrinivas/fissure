@@ -1,5 +1,6 @@
 use crate::models::torrent_jobs;
 use crate::protocols::peer_handshake::PeerConnection;
+use ascii_converter::decimals_to_binary;
 use byteorder;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
@@ -7,15 +8,23 @@ use crossbeam_channel;
 use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::str::Chars;
 use std::time::Duration;
 use to_binary;
 
 fn generate_piece_request(job: torrent_jobs::Job) -> String {
     let mut request_str: String = String::new();
-    request_str = format!("{}{}", request_str, "0D06");
-    request_str = format!("{}{}", request_str, hex::encode(job.index.to_string()));
-    request_str = format!("{}{}", request_str, hex::encode(job.begin.to_string()));
-    request_str = format!("{}{}", request_str, hex::encode(job.length.to_string()));
+    println!(
+        "{}{}{}",
+        job.index.to_string(),
+        job.begin.to_string(),
+        job.length.to_string()
+    );
+    // All the numbers in the request message are 4 byte hex reps, implying 8 hex chars, 4 sets
+    request_str = format!("{}{}", request_str, "0000000D06");
+    request_str = format!("{}{}", request_str, format!("{:08X}", job.index));
+    request_str = format!("{}{}", request_str, format!("{:08X}", job.begin));
+    request_str = format!("{}{}", request_str, format!("{:08X}", job.length));
     return request_str;
 }
 
@@ -30,39 +39,39 @@ pub fn state_machine(
     let mut pipelined = 0;
     println!("Starting protocol state machine");
     loop {
-        // if pipelined < 5 {
-        //     let job = unfinished_job_recv.recv().unwrap();
-        //     println!("Trying to pipeline request...{}", job.index);
-        //     if conn.bitfield.get(job.index as usize).unwrap() != "1" {
-        //         // This peer doesnt have the needed piece, hence put back into queue
-        //         println!("here...");
-        //         let clone_send = unfinished_job_snd.clone();
-        //         tokio::spawn(async move {
-        //             clone_send.send(job).unwrap(); //MPMC so clone is fine and allowed
-        //         });
-        //     } else if conn.peer_choking == true {
-        //         // We are interested, but we are choked
-        //         // the peer has a piece we want, hence we will send interested request
-        //         // We arent doign anythign smart here as we are putting this piece back into the queue
-        //         // and maybe satisfied by some other peer, but I think is alright
-        //         println!("here..2.");
-        //         let mut interested_req = String::new();
-        //         println!(
-        //             "Sending interested request to peer with id {:?}",
-        //             conn.peer_id
-        //         );
-        //         interested_req = format!("{}{}", interested_req, "0000000102");
-        //         stream
-        //             .write(hex::decode(interested_req).unwrap().as_slice())
-        //             .unwrap();
-        //     } else {
-        //         println!("here..3.");
-        //         pipelined += 1;
-        //         println!("Sending request for piece with index {}", job.index);
-        //         let request_str = generate_piece_request(job);
-        //         println!("{}", request_str)
-        //     }
-        // }
+        if pipelined < 5 {
+            let job = unfinished_job_recv.recv().unwrap();
+            println!("Trying to pipeline request...{}", job.index);
+            if conn.bitfield.get(job.index as usize).unwrap() != "1" {
+                // This peer doesnt have the needed piece, hence put back into queue
+                let clone_send = unfinished_job_snd.clone();
+                tokio::spawn(async move {
+                    clone_send.send(job).unwrap(); //MPMC so clone is fine and allowed
+                });
+            } else if conn.peer_choking == true {
+                // We are interested, but we are choked
+                // the peer has a piece we want, hence we will send interested request
+                // We arent doign anythign smart here as we are putting this piece back into the queue
+                // and maybe satisfied by some other peer, but I think is alright
+                let mut interested_req = String::new();
+                println!(
+                    "Sending interested request to peer with id {:?}",
+                    conn.peer_id
+                );
+                interested_req = format!("{}{}", interested_req, "0000000102");
+                stream
+                    .write(hex::decode(interested_req).unwrap().as_slice())
+                    .unwrap();
+            } else {
+                pipelined += 1;
+                println!("Sending request for piece with index {}", job.index);
+                let request_str = generate_piece_request(job); // [TODO] Continue
+                println!("{}", request_str); //[DEBUG]
+                stream
+                    .write(hex::decode(request_str).unwrap().as_slice())
+                    .unwrap();
+            }
+        }
         if conn.keep_alive.elapsed() > Duration::new(120, 0) {
             // Duration has PartialEq
             stream.shutdown(std::net::Shutdown::Both).unwrap();
@@ -126,18 +135,18 @@ pub fn state_machine(
                                     println!("Read the bitfields successfully.");
                                 }
                                 Err(e) => {
-                                    panic!("{}",e);
+                                    panic!("{}", e);
                                 }
                             }
-                            let mut zero_based_index = String::new();
-                            Cursor::new(data)
-                                .read_to_string(&mut zero_based_index)
-                                .unwrap();
-                            for (index, val) in to_binary::BinaryString::from(zero_based_index)
-                                .to_string()
-                                .chars()
-                                .enumerate()
-                            {
+                            let mut binary_flat_map: Vec<char> = Vec::new();
+                            for i in data.iter() {
+                                let string_rep = format!("{:b}", i);
+                                // println!("{}", string_rep); //[DEBUG]
+                                for j in string_rep.to_string().chars() {
+                                    binary_flat_map.push(j);
+                                }
+                            }
+                            for (index, val) in binary_flat_map.iter().enumerate() {
                                 let mut_value = conn.bitfield.get_mut(index).unwrap();
                                 *mut_value = val.to_string();
                             }
@@ -149,7 +158,7 @@ pub fn state_machine(
                         }
                         7 => {}
                         _ => {
-                            // println!("Something else {}", id);
+                            println!("We are getting a piece, message incoming SIR! {}", id);
                             continue;
                         }
                     }
