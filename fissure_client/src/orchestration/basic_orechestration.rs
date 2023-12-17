@@ -56,7 +56,7 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
         .await;
     });
 
-    thread::sleep(time::Duration::from_secs(10)); // trying to avoid race between write and read
+    thread::sleep(time::Duration::from_secs(5)); // trying to avoid race between write and read
                                                   // lock on client state, HORRIBLE CODING...I HOPE
                                                   // TO GOD I FIX THIS PROPERLY.
     tokio::spawn(async move {

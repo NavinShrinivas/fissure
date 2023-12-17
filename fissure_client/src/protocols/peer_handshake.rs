@@ -50,7 +50,7 @@ pub struct PeerConnection {
     pub peer_id: Option<String>,
     pub am_choking: bool,
     pub am_interested: bool,
-    pub peer_choking: bool,
+    pub peer_choking: bool, // The connected peer is choking us
     pub peer_interested: bool,
     pub keep_alive: Instant,
 }

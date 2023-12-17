@@ -5,47 +5,71 @@ use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use crossbeam_channel;
 use std::io::Cursor;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::time::Duration;
 use to_binary;
 
 fn generate_piece_request(job: torrent_jobs::Job) -> String {
     let mut request_str: String = String::new();
-    request_str = format!("{}{}", request_str, "D6");
+    request_str = format!("{}{}", request_str, "0D06");
     request_str = format!("{}{}", request_str, hex::encode(job.index.to_string()));
     request_str = format!("{}{}", request_str, hex::encode(job.begin.to_string()));
     request_str = format!("{}{}", request_str, hex::encode(job.length.to_string()));
     return request_str;
 }
 
+// To represent 1 hex char you need 4 bit, 2 hex chars is one byte, 4 bytes is 8 hex chars
+
 pub fn state_machine(
     mut conn: PeerConnection,
     unfinished_job_recv: crossbeam_channel::Receiver<torrent_jobs::Job>,
     unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
 ) {
-    let mut data = [0; 4];
     let mut stream = conn.conn;
     let mut pipelined = 0;
     println!("Starting protocol state machine");
     loop {
-        if conn.peer_choking == false && pipelined < 5 {
-            pipelined += 1;
-            let job = unfinished_job_recv.recv().unwrap();
-            if conn.bitfield.get(job.index as usize).unwrap() != "1" {
-                tokio::spawn(async move {
-                    unfinished_job_snd.send(job).unwrap();
-                });
-                return;
-            }
-            let request_str = generate_piece_request(job);
-            println!("{}", request_str)
-        }
+        // if pipelined < 5 {
+        //     let job = unfinished_job_recv.recv().unwrap();
+        //     println!("Trying to pipeline request...{}", job.index);
+        //     if conn.bitfield.get(job.index as usize).unwrap() != "1" {
+        //         // This peer doesnt have the needed piece, hence put back into queue
+        //         println!("here...");
+        //         let clone_send = unfinished_job_snd.clone();
+        //         tokio::spawn(async move {
+        //             clone_send.send(job).unwrap(); //MPMC so clone is fine and allowed
+        //         });
+        //     } else if conn.peer_choking == true {
+        //         // We are interested, but we are choked
+        //         // the peer has a piece we want, hence we will send interested request
+        //         // We arent doign anythign smart here as we are putting this piece back into the queue
+        //         // and maybe satisfied by some other peer, but I think is alright
+        //         println!("here..2.");
+        //         let mut interested_req = String::new();
+        //         println!(
+        //             "Sending interested request to peer with id {:?}",
+        //             conn.peer_id
+        //         );
+        //         interested_req = format!("{}{}", interested_req, "0000000102");
+        //         stream
+        //             .write(hex::decode(interested_req).unwrap().as_slice())
+        //             .unwrap();
+        //     } else {
+        //         println!("here..3.");
+        //         pipelined += 1;
+        //         println!("Sending request for piece with index {}", job.index);
+        //         let request_str = generate_piece_request(job);
+        //         println!("{}", request_str)
+        //     }
+        // }
         if conn.keep_alive.elapsed() > Duration::new(120, 0) {
             // Duration has PartialEq
             stream.shutdown(std::net::Shutdown::Both).unwrap();
             println!("Killing connection");
-            return; // Kill the connection
+            return; // Kill the connection if no update for 120 secondss
         }
+        let mut data = [0; 4]; // Buffer to find msg len
         match stream.read_exact(&mut data) {
             Ok(_) => {
                 let msg_len: u32 = u32::from_be_bytes(data);
@@ -53,7 +77,7 @@ pub fn state_machine(
                 if msg_len == 0 {
                     panic!("Message length should not be 1...");
                 } else {
-                    let mut data = [0; 1];
+                    let mut data = [0; 1]; // Buffer to find ID
                     stream.read_exact(&mut data).unwrap();
                     let id = u8::from_be_bytes(data);
                     match id {
@@ -96,7 +120,15 @@ pub fn state_machine(
                                     conn.bitfield.len()
                                 );
                             }
-                            let data = Vec::new();
+                            let mut data = vec![0; rem_len as usize]; // Buffer to read bitfield
+                            match stream.read_exact(&mut data) {
+                                Ok(_) => {
+                                    println!("Read the bitfields successfully.");
+                                }
+                                Err(e) => {
+                                    panic!("{}",e);
+                                }
+                            }
                             let mut zero_based_index = String::new();
                             Cursor::new(data)
                                 .read_to_string(&mut zero_based_index)
