@@ -40,7 +40,12 @@ pub fn state_machine(
     println!("Starting protocol state machine");
     loop {
         if pipelined < 5 {
-            let job = unfinished_job_recv.recv().unwrap();
+            let job = match unfinished_job_recv.recv() {
+                Ok(job) => job,
+                Err(e) => {
+                    panic!("Not able to recv unfinished job in state machine {}", e);
+                }
+            };
             println!("Trying to pipeline request...{}", job.index);
             if conn.bitfield.get(job.index as usize).unwrap() != "1" {
                 // This peer doesnt have the needed piece, hence put back into queue
