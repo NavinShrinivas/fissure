@@ -121,11 +121,9 @@ pub async fn job_orchestrator(
             let chunk_work = piece_state.remove(rng.gen_range(0..piece_state.len()));
             let job = torrent_jobs::Job::new_job_from_piece_process(chunk_work);
             let s = unfinished_job_snd.clone();
-            tokio::spawn(async move{
-                s.send(job).unwrap(); // awaits till read happens on the other side, I dont like
-                                      // it...but thats how "unbounded" channels work in crossbeam,
-                                      // maybe I should use bounded hmnmnmn
-            });
+            s.send(job).unwrap(); // awaits till read happens on the other side, I dont like
+                                  // it...but thats how "unbounded" channels work in crossbeam,
+                                  // maybe I should use bounded hmnmnmn
         }
     }
 }

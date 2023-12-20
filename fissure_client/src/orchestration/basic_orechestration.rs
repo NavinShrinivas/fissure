@@ -1,12 +1,12 @@
 use crate::models::client_meta::ClientState;
 use crate::models::torrent_jobs;
+use crate::models::torrent_meta::TrackerReponse;
 use crate::orchestration::handshake_orechestration;
 use crate::orchestration::job_orchestrator;
 use crate::orchestration::torrent_refresh;
 use crossbeam_channel;
 use std::sync::Arc;
 use std::{thread, time};
-use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 
 /// This function does the following in this mentioned order :
@@ -24,7 +24,7 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
 
     //Response from trackers cannot have more than 300 peers, this channel is used to send "new
     //peers" to handshake_orchestrator (tracker module -> handshake_module)
-    let (peer_tracker_handshake_channel_tx, peer_tracker_handshake_channel_rx) = mpsc::channel(300);
+    let (peer_tracker_handshake_channel_tx, peer_tracker_handshake_channel_rx) = crossbeam_channel::bounded::<TrackerReponse>(300);
 
     //[TODO]
     // let (job_sched_peer_connection_tx , job_sched_peer_connection_rx) = mpsc::channel(300); /
@@ -65,7 +65,7 @@ pub async fn start_dowload(client_state: Arc<RwLock<ClientState>>, torrent_file_
         .await;
     });
 
-    thread::sleep(time::Duration::from_secs(5)); // trying to avoid race between write and read
+    // thread::sleep(time::Duration::from_secs(5)); // trying to avoid race between write and read
                                                  // lock on client state, HORRIBLE CODING...I HOPE
                                                  // TO GOD I FIX THIS PROPERLY.
                                                  //Simply put we dont want the send sink to start be invoked

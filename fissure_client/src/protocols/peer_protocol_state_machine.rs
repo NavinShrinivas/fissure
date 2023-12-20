@@ -1,16 +1,12 @@
 use crate::models::torrent_jobs;
 use crate::protocols::peer_handshake::PeerConnection;
-use ascii_converter::decimals_to_binary;
 use byteorder;
 use byteorder::BigEndian;
 use byteorder::ReadBytesExt;
 use crossbeam_channel;
 use std::io::Cursor;
 use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::str::Chars;
 use std::time::Duration;
-use to_binary;
 
 fn generate_piece_request(job: torrent_jobs::Job) -> String {
     let mut request_str: String = String::new();
@@ -161,11 +157,12 @@ pub fn state_machine(
                             // For future expansion, to uploading capabilties at the moment
                             continue;
                         }
-                        7 => {}
-                        _ => {
+                        7 => {
                             println!("We are getting a piece, message incoming SIR! {}", id);
+                            pipelined -= 1;
                             continue;
                         }
+                        _ => {}
                     }
                 }
             }
