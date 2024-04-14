@@ -42,7 +42,7 @@ pub fn state_machine(
                     panic!("Not able to recv unfinished job in state machine {}", e);
                 }
             };
-            println!("Trying to pipeline request...{}", job.index);
+            println!("[INFO] Trying to pipeline request...{}", job.index);
             if conn.bitfield.get(job.index as usize).unwrap() != "1" {
                 // This peer doesnt have the needed piece, hence put back into queue
                 let clone_send = unfinished_job_snd.clone();
@@ -56,7 +56,7 @@ pub fn state_machine(
                 // and maybe satisfied by some other peer, but I think is alright
                 let mut interested_req = String::new();
                 println!(
-                    "Sending interested request to peer with id {:?}",
+                    "[INFO] Sending interested request to peer with id {:?}",
                     conn.peer_id
                 );
                 interested_req = format!("{}{}", interested_req, "0000000102");
@@ -65,9 +65,9 @@ pub fn state_machine(
                     .unwrap();
             } else {
                 pipelined += 1;
-                println!("Sending request for piece with index {}", job.index);
+                println!("[INFO] Sending request for piece with index {}", job.index);
                 let request_str = generate_piece_request(job); // [TODO] Continue
-                println!("{}", request_str); //[DEBUG]
+                println!("[DEBUG] {}", request_str); //[DEBUG]
                 stream
                     .write(hex::decode(request_str).unwrap().as_slice())
                     .unwrap();
@@ -94,22 +94,22 @@ pub fn state_machine(
                         0 => {
                             // Choking us
                             conn.peer_choking = true;
-                            println!("choking")
+                            println!("[INFO] getting choking")
                         }
                         1 => {
                             // Unchoking us
                             conn.peer_choking = false;
-                            println!("un-choking")
+                            println!("[INFO] getting un-choking")
                         }
                         2 => {
                             // Is intrested in what we have (future scope)
                             conn.peer_interested = true;
-                            println!("peer_interested")
+                            println!("[INFO] peer_interested in what we have")
                         }
                         3 => {
                             // Not intrested
                             conn.peer_interested = false;
-                            println!("un peer_interested")
+                            println!("[INFO] peer_uninterested")
                         }
                         4 => {
                             // Have
@@ -118,7 +118,7 @@ pub fn state_machine(
                                 Cursor::new(data).read_u32::<BigEndian>().unwrap() as usize;
                             let value_mut = conn.bitfield.get_mut(zero_based_index).unwrap();
                             *value_mut = 1.to_string();
-                            println!("have")
+                            println!("[INFO] peer telling what it has")
                         }
                         5 => {
                             // Bitfield
@@ -159,6 +159,10 @@ pub fn state_machine(
                         }
                         7 => {
                             println!("We are getting a piece, message incoming SIR! {}", id);
+                            //[TODO] Fetch the actual chunk and send it across
+                            #[allow(unused)]
+                            let zero_based_index =
+                                Cursor::new(data).read_u32::<BigEndian>().unwrap() as usize;
                             pipelined -= 1;
                             continue;
                         }

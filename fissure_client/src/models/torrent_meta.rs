@@ -18,8 +18,8 @@ pub struct FileInfo {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Info {
-    //In the single file case, the name key is the name of a file, in the muliple file case, it's the name of a directory.
-    pub name: String, // The file name/path to store...only reccomended
+    //In the single file case, the name key is the name of a file, in the multiple file case, it's the name of a directory.
+    pub name: String, // The file name/path to store...only recommended
     #[serde(rename = "piece length")]
     pub piece_length: u64, //Size of each piece the file is split into
     #[serde(rename = "pieces")]
@@ -84,7 +84,7 @@ pub struct Peer {
     pub port: i32,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TrackerReponse {
+pub struct TrackerResponse {
     #[serde(alias = "failure reason", alias = "failure_reason")]
     pub failure_reason: Option<String>,
     pub interval: Option<i64>,

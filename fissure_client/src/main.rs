@@ -3,8 +3,6 @@ mod helper;
 mod models;
 mod orchestration;
 mod protocols;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 
 pub struct ClientEnv {
     pub version: String, //Has to be 4 char long 0001(0.0.1), 0010(0.1.0)...
@@ -18,12 +16,9 @@ async fn main() {
         version: "0001".to_string(),
         port: "6001".to_string(),
     };
-    let client_state = Arc::new(RwLock::new(models::client_meta::ClientState::new_client(
-        client_env,
-    )));
-    orchestration::basic_orechestration::start_dowload(
-        client_state,
-        "../test_torrent_files/test.torrent",
-    )
-    .await;
+    let mut client = models::client_meta::Client::new_client(client_env);
+    let name = client.add_torrent_using_file_path("../test_torrent_files/test.torrent".to_string());
+    client
+        .orchestrate_download(client.torrents.get(&name).unwrap().clone())
+        .await;
 }

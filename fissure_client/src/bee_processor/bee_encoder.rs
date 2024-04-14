@@ -21,7 +21,7 @@ impl MetaInfo {
             Ok(v) => { return Ok(v)},
             Err(e) => {
                 return Err(BeeEncoderErr{
-                    error_string : "Error encoding info value back to bencoded.".to_string()+&e.to_string()
+                    error_string : "[ERROR] Error encoding info value back to bencoded.".to_string()+&e.to_string()
                 })
             }
         };

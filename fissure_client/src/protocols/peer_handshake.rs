@@ -1,17 +1,16 @@
-use crate::models::client_meta::ClientState;
-use crate::models::client_meta::ClientTorrentMeta;
+use crate::models::client_meta::ClientTorrentMetaInfo;
 use crate::models::torrent_meta::Peer;
 use byteorder;
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use byteorder::ReadBytesExt;
 use hex;
 use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::time;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
+#[allow(unused)]
 enum MessageID {
     MsgChoke,
     MsgUnchoke,
@@ -25,6 +24,7 @@ enum MessageID {
 }
 
 impl MessageID {
+    #[allow(unused)]
     pub fn ser(&self) -> i32 {
         match self {
             Self::MsgChoke => 0,
@@ -56,10 +56,15 @@ pub struct PeerConnection {
 }
 
 impl PeerConnection {
-    pub fn init_connection(c: TcpStream, ih: [u8; 20], pi: Option<String>, bitfield_size : u64) -> Self {
+    pub fn init_connection(
+        c: TcpStream,
+        ih: [u8; 20],
+        pi: Option<String>,
+        bitfield_size: u64,
+    ) -> Self {
         PeerConnection {
             conn: c,
-            bitfield: vec!["0".to_string(); (((bitfield_size/8) as f64).ceil()*8.0) as usize],
+            bitfield: vec!["0".to_string(); (((bitfield_size / 8) as f64).ceil() * 8.0) as usize],
             info_hash: ih,
             peer_id: pi,
             am_choking: true,
@@ -71,16 +76,14 @@ impl PeerConnection {
     }
     pub async fn peer_connection_from_peer_meta(
         peer_meta: &Peer,
-        working_torrent: usize,
-        client_state_arc: Arc<RwLock<ClientState>>,
+        client_torrent_meta_info_arc_mutex: Arc<RwLock<ClientTorrentMetaInfo>>,
+        peer_id: String,
     ) -> Self {
         //Pretty much does handshake
         println!("connecting..");
-        let client_state = client_state_arc.read().await;
-        let client_torrent_meta: &ClientTorrentMeta =
-            client_state.torrents.get(working_torrent).unwrap();
+        let client_torrent_meta_info = client_torrent_meta_info_arc_mutex.read().await;
         let mut handshake_str: String = String::new();
-        // we need the string to be completley hex, we decode to binary and shoot it to TCP
+        // we need the string to be fully hex, we decode to binary and shoot it to TCP
         // 19 decimal in hex : 0x13
         handshake_str = format!("{}{}", handshake_str, "13");
         handshake_str = format!("{}{}", handshake_str, hex::encode("BitTorrent protocol"));
@@ -90,13 +93,9 @@ impl PeerConnection {
         handshake_str = format!(
             "{}{}",
             handshake_str,
-            hex::encode(client_torrent_meta.info_hash)
+            hex::encode(client_torrent_meta_info.info_hash)
         );
-        handshake_str = format!(
-            "{}{}",
-            handshake_str,
-            hex::encode(client_state.peer_id.clone())
-        );
+        handshake_str = format!("{}{}", handshake_str, hex::encode(peer_id));
         // println!("{}", handshake_str);
         match TcpStream::connect(format!("{}:{}", peer_meta.ip, peer_meta.port)) {
             Ok(mut stream) => {
@@ -132,9 +131,10 @@ impl PeerConnection {
                         }
                         return PeerConnection::init_connection(
                             stream,
-                            client_torrent_meta.info_hash,
+                            client_torrent_meta_info.info_hash,
                             peer_meta.peer_id.clone(),
-                            client_torrent_meta.raw_torrent.info.length.unwrap()/client_torrent_meta.raw_torrent.info.piece_length
+                            client_torrent_meta_info.raw_torrent.info.length.unwrap()
+                                / client_torrent_meta_info.raw_torrent.info.piece_length,
                         );
                     }
                     Err(e) => {

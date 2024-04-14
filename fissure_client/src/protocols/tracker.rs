@@ -1,6 +1,6 @@
-use crate::models::client_meta::ClientState;
-use crate::models::client_meta::ClientTorrentMeta;
-use crate::models::torrent_meta::{TrackerReponse, TrackerRequest};
+use crate::bee_processor::bee_decoder::BeeDecoderErr;
+use crate::models::client_meta::ClientTorrentMetaInfo;
+use crate::models::torrent_meta::{TrackerRequest, TrackerResponse};
 use reqwest;
 use std::error::Error;
 use std::fmt;
@@ -26,28 +26,28 @@ impl fmt::Display for TrackerRequestErr {
 impl Error for TrackerRequestErr {}
 // Needs rafactor to be able to run with only ClientState and for all torrents
 pub async fn refresh_peer_list_from_tracker(
-    working_torrent: usize,
-    client_state_arc: Arc<RwLock<ClientState>>,
-) -> Result<TrackerReponse, TrackerRequestErr> {
-    let client_state = client_state_arc.read().await;
-    let client_torrent_meta: &ClientTorrentMeta =
-        client_state.torrents.get(working_torrent).unwrap();
+    client_torrent_meta_info_arc_mutex: &Arc<RwLock<ClientTorrentMetaInfo>>,
+    peer_id: String,
+    port: String,
+) -> Result<TrackerResponse, BeeDecoderErr> {
+    let client_torrent_meta_info = client_torrent_meta_info_arc_mutex.read().await;
     let req = TrackerRequest {
-        info_hash: client_torrent_meta.info_hash,
-        peer_id: client_state.peer_id.clone(),
-        port: client_state.port.clone(),
-        uploaded: client_torrent_meta.uploaded.clone(),
-        downloaded: client_torrent_meta.downloaded.clone(),
-        left: client_torrent_meta.left.clone(),
+        info_hash: client_torrent_meta_info.info_hash,
+        peer_id,
+        port,
+        uploaded: client_torrent_meta_info.uploaded.clone(),
+        downloaded: client_torrent_meta_info.downloaded.clone(),
+        left: client_torrent_meta_info.left.clone(),
     };
     let qs = req.generate_query_string();
-    let client = reqwest::Client::new();
+    let req_client = reqwest::Client::new();
 
-    let url_with_parmeters = format!("{}?{}", client_torrent_meta.raw_torrent.announce, qs);
+    let url_with_parameters = format!("{}?{}", client_torrent_meta_info.raw_torrent.announce, qs);
     // Needs to be debug
-    println!("Making request to tracker : {}", url_with_parmeters);
-    let res = client
-        .get(url_with_parmeters)
+    println!("Making request to tracker : {}", url_with_parameters);
+
+    let res = req_client
+        .get(url_with_parameters)
         .send()
         .await
         .expect("Failed to make connection :(. Check your internet connection.");
@@ -55,8 +55,10 @@ pub async fn refresh_peer_list_from_tracker(
         .text_with_charset("WINDOWS-1252")
         .await
         .expect("Error opening body from response, maybe connection got interrupted.");
-
-    let tracker_response = TrackerReponse::from_raw_text_response_body(raw_body);
     println!("here");
-    return Ok(tracker_response.unwrap());
+    let resp = TrackerResponse::from_raw_text_response_body(raw_body);
+    println!("{:?}", resp);
+    return resp;
+
+    //mutex is dropped after scope
 }

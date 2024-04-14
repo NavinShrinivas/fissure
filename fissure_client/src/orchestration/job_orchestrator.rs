@@ -1,9 +1,20 @@
-use crate::models::client_meta::ClientState;
+use crate::models::torrent_meta::MetaInfo;
 use crate::models::torrent_jobs;
 use crossbeam_channel;
 use rand::Rng;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+
+
+/* Hirerarchy files in torrents : 
+ * A file is made up of pieces, each piece can be made up of chunks where each chunk can maximum be 2^14 bytes (16384 bytes)
+ * Size of each piece can vary and is mentioned in the meta info the bencoded torrent file 
+ * PieceProcess in this file, is an in memory representation of individual chunks of the file
+ * where, we can locate its posistion in the file, by knowing the index of the piece, and index
+ * (this is 1-indexed) of the chunk within the piece
+ *
+ * Requests for these chunks, instead of using index for offset within the peice, they use byte
+ * offset within the piece
+ *
+ */
 
 #[derive(Clone)]
 pub enum Chunk {
@@ -53,40 +64,32 @@ impl PieceProcess {
     }
     pub fn torrent_piece_state(size: usize, piece_size: usize) -> Vec<Self> {
         let upper_index = size / piece_size; // Both are in bytes (from MetaInfo)
-        let full_pieces = upper_index - 1;
-        let mut temp_peice_state: Vec<Self> = Vec::new();
+        let full_pieces = upper_index - 1; //If there is a partial piece
+        let mut temp_piece_state: Vec<Self> = Vec::new();
         for i in 0..full_pieces {
-            temp_peice_state.extend(Self::new(i, piece_size / 16384));
+            temp_piece_state.extend(Self::new(i, piece_size / 16384));
         }
         let number_of_full_chunks_in_last_piece =
             (((size - (full_pieces * piece_size)) / 16384) as f64).floor();
         let size_of_non_full_chunk = (size - (full_pieces * piece_size)) as u32
             - (number_of_full_chunks_in_last_piece as u32 * 16384) as u32; // Only 1 non full chunk possible
-        temp_peice_state.extend(Self::new_non_full_pieces(
+        temp_piece_state.extend(Self::new_non_full_pieces(
             full_pieces,
             number_of_full_chunks_in_last_piece as usize,
             size_of_non_full_chunk,
         ));
-        return temp_peice_state;
+        return temp_piece_state;
     }
 }
 
 pub async fn job_orchestrator(
     unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
-    torrent_index: usize,
-    client_state: Arc<RwLock<ClientState>>,
+    torrent_meta_info: &MetaInfo, //Non Client torrent meta info
 ) {
     // Needs to determines chunks from pieces and send it across channel
     // Processing to create a "state" of all possible chunks
-    println!("debug : starting job orchestration");
-    let read_client_state = client_state.read().await;
-    println!("debug : Able to read access client state.");
-    let raw_torrent = &read_client_state
-        .torrents
-        .get(torrent_index)
-        .unwrap()
-        .raw_torrent
-        .info;
+    println!("[DEBUG] starting job orchestration");
+    let raw_torrent = &torrent_meta_info.info;
     let mut piece_state = PieceProcess::torrent_piece_state(
         raw_torrent.length.unwrap() as usize,
         raw_torrent.piece_length as usize,
