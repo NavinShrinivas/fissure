@@ -103,15 +103,12 @@ pub fn search_for_item_in_vec_and_return_value(
     None
 }
 
-pub fn get_value_from_value(
-    value: &Value,
-    key: &str,
-) -> Option<Value> {
+pub fn get_value_from_value(value: &Value, key: &str) -> Option<Value> {
     match value.get(key) {
         Some(v) => Some(v.clone()),
         None => {
             log::error!("Error getting {} from value", key);
             None
-        },
+        }
     }
 }

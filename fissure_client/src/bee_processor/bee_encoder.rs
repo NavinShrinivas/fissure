@@ -17,14 +17,14 @@ impl Error for BeeEncoderErr {}
 impl MetaInfo {
     pub fn info_bencoded_binary_form(&self) -> Result<Vec<u8>, BeeEncoderErr> {
         // process input message
-        match serde_bencoded::to_vec(&self.info){
-            Ok(v) => { return Ok(v)},
+        match serde_bencoded::to_vec(&self.info) {
+            Ok(v) => return Ok(v),
             Err(e) => {
-                return Err(BeeEncoderErr{
-                    error_string : "[ERROR] Error encoding info value back to bencoded.".to_string()+&e.to_string()
+                return Err(BeeEncoderErr {
+                    error_string: "[ERROR] Error encoding info value back to bencoded.".to_string()
+                        + &e.to_string(),
                 })
             }
         };
     }
 }
-

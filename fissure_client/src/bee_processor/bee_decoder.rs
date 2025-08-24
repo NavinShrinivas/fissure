@@ -8,12 +8,12 @@
 
 use crate::models::torrent_meta::MetaInfo;
 use crate::models::torrent_meta::TrackerResponse;
+use log::{error, info};
 use serde_bencoded::from_bytes;
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
-use log::{error, info};
 
 #[derive(Debug)]
 pub struct BeeDecoderErr {

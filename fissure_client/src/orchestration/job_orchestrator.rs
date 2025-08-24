@@ -1,13 +1,19 @@
-use crate::models::torrent_meta::MetaInfo;
+use std::collections::HashSet;
+use std::ops::Deref;
+use std::sync::Arc;
+
+use crate::models::client_meta::ClientTorrentMetaInfo;
 use crate::models::torrent_jobs;
+use crate::{models::torrent_meta::MetaInfo, orchestration::job_orchestrator};
+use byte_unit::Byte;
 use crossbeam_channel;
+use log::{debug, error, info};
 use rand::Rng;
-use log::{error, debug, info};
+use tokio::sync::RwLock;
 
-
-/* Hirerarchy files in torrents : 
+/* Hirerarchy files in torrents :
  * A file is made up of pieces, each piece can be made up of chunks where each chunk can maximum be 2^14 bytes (16384 bytes)
- * Size of each piece can vary and is mentioned in the meta info the bencoded torrent file 
+ * Size of each piece can vary and is mentioned in the meta info the bencoded torrent file
  * PieceProcess in this file, is an in memory representation of individual chunks of the file
  * where, we can locate its posistion in the file, by knowing the index of the piece, and index
  * (this is 1-indexed) of the chunk within the piece
@@ -19,114 +25,171 @@ use log::{error, debug, info};
 
 #[derive(Clone)]
 pub enum Chunk {
-    StandardChunk(Vec<u8>),
-    PartialChunk(u32, Vec<u8>),
+    StandardChunk(u32, Vec<u8>),     //index, data
+    PartialChunk(u32, u32, Vec<u8>), //index, size, data
 }
 
+//PieceProcess is a piece level granular memory rep of data
 #[derive(Clone)]
-pub struct PieceProcess {
-    pub index: usize, //indeox of piece
-    pub nth_chunk: usize, //1-indexed chunk pointer
-    pub chunk: Chunk,
+pub struct MemoryPiece {
+    pub index: usize,            //index of piece
+    pub chunks: Vec<Chunk>,      //all the chunks within the piece
+    pub integrity_hash: Vec<u8>, //sha1 hash of piece to verify integrity
 }
 
-impl PieceProcess {
-    pub fn new(index: usize, number_of_chunks: usize) -> Vec<Self> {
-        let mut temp: Vec<Self> = Vec::new();
+impl MemoryPiece {
+    pub fn new(index: usize, number_of_chunks: usize, hash: Vec<u8>) -> Self {
+        let mut chunks: Vec<Chunk> = Vec::new();
         for i in 0..number_of_chunks {
-            temp.push(Self {
-                index,
-                nth_chunk: i + 1,
-                chunk: Chunk::StandardChunk(Vec::new()),
-            });
+            chunks.push(Chunk::StandardChunk(i as u32 + 1, Vec::new()));
         }
-        return temp;
+        Self {
+            index,
+            chunks,
+            integrity_hash: hash,
+        }
     }
     pub fn new_non_full_pieces(
         index: usize,
         number_of_full_chunks: usize,
         size_of_partial_chunk: u32,
-    ) -> Vec<Self> {
-        let mut temp: Vec<Self> = Vec::new();
+        hash: Vec<u8>,
+    ) -> Self {
+        let mut chunks: Vec<Chunk> = Vec::new();
         for i in 0..number_of_full_chunks {
-            temp.push(Self {
-                index,
-                nth_chunk: i + 1,
-                chunk: Chunk::StandardChunk(Vec::new()),
-            });
+            chunks.push(Chunk::StandardChunk(i as u32 + 1, Vec::new()));
         }
+        chunks.push(Chunk::PartialChunk(
+            number_of_full_chunks as u32 + 2,
+            size_of_partial_chunk,
+            Vec::new(),
+        ));
 
-        temp.push(PieceProcess {
+        Self {
             index,
-            nth_chunk: number_of_full_chunks + 1,
-            chunk: Chunk::PartialChunk(size_of_partial_chunk, Vec::new()),
-        });
-        return temp;
+            chunks,
+            integrity_hash: hash,
+        }
     }
-    pub fn torrent_piece_state(size: usize, piece_size: usize) -> Vec<Self> {
+    pub fn torrent_piece_state(
+        size: usize,
+        piece_size: usize,
+        torrent_meta_info: &MetaInfo,
+    ) -> Vec<Self> {
         let upper_index = size / piece_size; // Both are in bytes (from MetaInfo)
         let full_pieces = upper_index - 1; //If there is a partial piece
         let mut temp_piece_state: Vec<Self> = Vec::new();
         for i in 0..full_pieces {
-            temp_piece_state.extend(Self::new(i, piece_size / 16384));
+            let piece_hash_start = i * 20;
+            let piece_hash_end = piece_hash_start + 20;
+            let piece_hash =
+                torrent_meta_info.info.pieces_hash[piece_hash_start..piece_hash_end].to_vec();
+            temp_piece_state.push(Self::new(i, piece_size / 16384, piece_hash));
         }
         let number_of_full_chunks_in_last_piece =
             (((size - (full_pieces * piece_size)) / 16384) as f64).floor();
         let size_of_non_full_chunk = (size - (full_pieces * piece_size)) as u32
             - (number_of_full_chunks_in_last_piece as u32 * 16384) as u32; // Only 1 non full chunk possible
-        temp_piece_state.extend(Self::new_non_full_pieces(
+
+        let last_piece_hash_start = full_pieces * 20;
+        let last_piece_hash_end = last_piece_hash_start + 20;
+        let last_piece_hash =
+            torrent_meta_info.info.pieces_hash[last_piece_hash_start..last_piece_hash_end].to_vec();
+
+        temp_piece_state.push(Self::new_non_full_pieces(
             full_pieces,
             number_of_full_chunks_in_last_piece as usize,
             size_of_non_full_chunk,
+            last_piece_hash,
         ));
         return temp_piece_state;
     }
 }
 
-pub async fn job_orchestrator(
-    unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
+pub fn file_piece_memory_representation(
     torrent_meta_info: &MetaInfo, //Non Client torrent meta info
-) {
+) -> Vec<MemoryPiece> {
     // Needs to determines chunks from pieces and send it across channel
     // Processing to create a "state" of all possible chunks
     let raw_torrent = &torrent_meta_info.info;
-    let mut piece_state = PieceProcess::torrent_piece_state(
+    let piece_state = MemoryPiece::torrent_piece_state(
         raw_torrent.length.unwrap() as usize,
         raw_torrent.piece_length as usize,
+        torrent_meta_info,
     );
 
     // Test (To see is number of chunks and len of representation is same) :
     let mut tot_len = 0;
     let mut chunks = 0;
     for i in piece_state.iter() {
-        chunks += 1;
-        match i.chunk {
-            Chunk::StandardChunk(_) => {
-                tot_len += 16384;
-            }
-            Chunk::PartialChunk(chunk_size, _) => {
-                tot_len += chunk_size;
+        for c in i.chunks.iter() {
+            chunks += 1;
+            match c {
+                Chunk::StandardChunk(_, _) => {
+                    tot_len += 16384;
+                }
+                Chunk::PartialChunk(_, chunk_size, _) => {
+                    tot_len += chunk_size;
+                }
             }
         }
     }
-    info!("tot size : {}, chunks : {}", tot_len, chunks);
+    let bytes = byte_unit::Byte::from_u64(tot_len as u64);
+    let human_readable = bytes
+        .get_appropriate_unit(byte_unit::UnitType::Binary)
+        .to_string();
+    info!(
+        "tot accumulated chunks size : {}, chunks : {}",
+        human_readable, chunks
+    );
+
+    return piece_state;
+}
+pub async fn job_orchestrator(
+    arc_mutex_piece_mem_rep: Arc<RwLock<Vec<MemoryPiece>>>,
+    unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
+) {
+    let mut schedule_pieces: HashSet<u32> = HashSet::new();
+
+    let piece_mem_rep_read = arc_mutex_piece_mem_rep.read().await;
+    let total_pieces = piece_mem_rep_read.len();
+    drop(piece_mem_rep_read);
     loop {
-        if piece_state.len() == 0 {
-            break;
-        }
-        if unfinished_job_snd.len() > 20 {
-            // We dont buffer more than 20 pieces, we might want to write some logic to see if
+        if unfinished_job_snd.len() > 60 {
+            // We dont buffer more than 60 pieces, [TODO] we might want to write some logic to see if
             // there is no progress in the chunks in the channel, in which case we'd have to move
             // on to other chunks
+
+            //These 60 piece can be part of different pieces. If we have 60 dead chunks, this logic will get stuck
             continue;
         } else {
+            //=====reading contentioned space=========
+            let piece_mem_rep_read = arc_mutex_piece_mem_rep.read().await;
             let mut rng = rand::thread_rng();
-            let chunk_work = piece_state.remove(rng.gen_range(0..piece_state.len()));
-            let job = torrent_jobs::Job::new_job_from_piece_process(chunk_work);
-            let s = unfinished_job_snd.clone();
-            s.send(job).unwrap(); // awaits till read happens on the other side, I dont like
-                                  // it...but thats how "unbounded" channels work in crossbeam,
-                                  // maybe I should use bounded hmnmnmn
+            let mut random_index = rng.gen_range(0..total_pieces);
+            while schedule_pieces.contains(&(random_index as u32)) {
+                random_index = rng.gen_range(0..total_pieces);
+            }
+            let chunks_to_be_scheduled = piece_mem_rep_read[random_index].chunks.clone();
+            drop(piece_mem_rep_read);
+            //===========done reading================
+
+            schedule_pieces.insert(random_index as u32);
+            for c in chunks_to_be_scheduled.iter() {
+                let job =
+                    torrent_jobs::Job::new_job_from_piece_process(random_index as u32, c.clone());
+                let s = unfinished_job_snd.clone();
+                debug!(
+                    "Scheduling piece index : {} and chunk offset : {} out of total pieces : {}",
+                    random_index, job.begin, total_pieces
+                );
+                s.send(job).unwrap(); // awaits till read happens on the other side, I dont like
+                                      // it...but thats how "unbounded" channels work in crossbeam,
+                                      // maybe I should use bounded hmnmnmn
+            }
+            if schedule_pieces.len() >= total_pieces {
+                break;
+            }
         }
     }
 }

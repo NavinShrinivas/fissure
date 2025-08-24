@@ -14,7 +14,7 @@ use log::{debug, error, info};
 
 fn generate_piece_request(job: &torrent_jobs::Job) -> String {
     let mut request_str: String = String::new();
-    info!(
+    debug!(
         "request piece info : {} {} {}",
         job.index.to_string(),
         job.begin.to_string(),
@@ -35,7 +35,7 @@ pub fn state_machine(
     unfinished_job_recv: crossbeam_channel::Receiver<torrent_jobs::Job>,
     unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
 ) {
-    let mut stream= conn.conn;
+    let mut stream = conn.conn;
     let mut pipelined = 0;
     let mut pipelined_tasks: HashMap<String, Job> = HashMap::new();
     debug!("Starting protocol state machine");
@@ -92,7 +92,7 @@ pub fn state_machine(
         let mut data: [u8; 4] = [0; 4]; // Buffer to find msg len
         match stream.read(&mut data) {
             Ok(n) => {
-                if n==0 {
+                if n == 0 {
                     continue;
                 }
                 let msg_len: u32 = u32::from_be_bytes(data);
@@ -104,10 +104,13 @@ pub fn state_machine(
                     stream.read_exact(&mut msp_type).unwrap();
                     let id = u8::from_be_bytes(msp_type);
                     let mut remaining_data = vec![0; msg_len as usize - 1 as usize];
-                    match stream.read_exact(&mut remaining_data){
+                    match stream.read_exact(&mut remaining_data) {
                         Ok(()) => {
-                            debug!("Read {} bytes after message type in new message", msg_len - 1);
-                        }, 
+                            debug!(
+                                "Read {} bytes after message type in new message",
+                                msg_len - 1
+                            );
+                        }
                         Err(e) => {
                             //return jobs in pipeline back to unfinished queue
                             let clone_send = unfinished_job_snd.clone();
@@ -121,9 +124,7 @@ pub fn state_machine(
                             error!("Ran into an error reading remaining response body : {}. Shutting down connection with this peer.", e);
                             stream.shutdown(std::net::Shutdown::Both).unwrap();
                             return;
-
                         }
-
                     };
                     match id {
                         0 => {
@@ -149,16 +150,21 @@ pub fn state_machine(
                         4 => {
                             // Have
                             info!("[INFO] peer telling what it has");
-                            let arr: [u8; 4] = remaining_data[..4].try_into().expect("slice with incorrect length");
-                            let value_mut = conn.bitfield.get_mut(u32::from_be_bytes(arr) as usize).unwrap();
+                            let arr: [u8; 4] = remaining_data[..4]
+                                .try_into()
+                                .expect("slice with incorrect length");
+                            let value_mut = conn
+                                .bitfield
+                                .get_mut(u32::from_be_bytes(arr) as usize)
+                                .unwrap();
 
                             *value_mut = 1.to_string();
                         }
                         5 => {
                             // Bitfield
                             let bitfield_size: usize = conn.bitfield.len() / 8;
-                            let bitfield_data : Vec<u8> = remaining_data[..bitfield_size].to_vec();// Buffer to read bitfield
- 
+                            let bitfield_data: Vec<u8> = remaining_data[..bitfield_size].to_vec(); // Buffer to read bitfield
+
                             let mut binary_flat_map: Vec<char> = Vec::new();
                             for i in bitfield_data.iter() {
                                 let string_rep = format!("{:b}", i);
@@ -179,14 +185,17 @@ pub fn state_machine(
                         }
                         7 => {
                             //PIECE
-                            info!("We are getting a piece, {}", id);
+                            debug!("We are getting a piece, {}", id);
 
-                            let piece_index_bin: [u8; 4] = remaining_data[..4].try_into().expect("slice with incorrect length for piece index");
+                            let piece_index_bin: [u8; 4] = remaining_data[..4]
+                                .try_into()
+                                .expect("slice with incorrect length for piece index");
                             let piece_idx = u32::from_be_bytes(piece_index_bin);
 
-                            let chunk_offset_bin: [u8; 4] = remaining_data[4..8].try_into().expect("slice with incorrect length for piece index");
+                            let chunk_offset_bin: [u8; 4] = remaining_data[4..8]
+                                .try_into()
+                                .expect("slice with incorrect length for piece index");
                             let chunk_offset = u32::from_be_bytes(chunk_offset_bin);
-
 
                             let chunk_data = remaining_data[8..].to_vec();
 
@@ -195,13 +204,13 @@ pub fn state_machine(
                             let piece_id =
                                 format!("{}{}{}", piece_idx, chunk_offset, chunk_data.len());
 
-                            if pipelined_tasks.contains_key(piece_id.as_str()){
-                                info!("Piplined task over!");
+                            if pipelined_tasks.contains_key(piece_id.as_str()) {
+                                debug!("Piplined task over!");
                                 pipelined_tasks.remove(&piece_id);
-                            }else{
-                                info!("Random piece");
+                            } else {
+                                debug!("Random piece");
                             }
-                            info!("{} {} {}", piece_idx, chunk_offset, chunk_data.len());
+                            debug!("{} {} {}", piece_idx, chunk_offset, chunk_data.len());
 
                             pipelined -= 1;
                             continue;

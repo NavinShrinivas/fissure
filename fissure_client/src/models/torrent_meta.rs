@@ -3,11 +3,11 @@
     defined in the initial bit torrent protocol (https://www.bittorrent.org/beps/bep_0003.html)
 */
 
+use byte_unit::{self, UnitType};
+use log::info;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use urlencoding;
-use log::{info};
-use byte_unit::{self, UnitType};
 // If I'd have to match to a different name
 // #[serde(rename = "piece length")]
 

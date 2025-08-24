@@ -3,10 +3,10 @@ use crate::models::torrent_meta::Peer;
 use crate::models::torrent_meta::TrackerResponse;
 use crate::protocols;
 use crossbeam_channel;
+use log::{debug, error, info};
 use std::sync::Arc;
 use std::{thread, time};
 use tokio::sync::RwLock;
-use log::{error, info, debug};
 
 pub async fn torrent_refresh(
     client_torrent_meta_info: Arc<RwLock<ClientTorrentMetaInfo>>,
@@ -19,8 +19,12 @@ pub async fn torrent_refresh(
     let mut old_tracker_response: Option<TrackerResponse> = None;
 
     loop {
-        let tracker_response =
-            protocols::tracker::refresh_peer_list_from_tracker(&client_torrent_meta_info, peer_id.to_string(), port.to_string()).await;
+        let tracker_response = protocols::tracker::refresh_peer_list_from_tracker(
+            &client_torrent_meta_info,
+            peer_id.to_string(),
+            port.to_string(),
+        )
+        .await;
 
         //Lets skip writing old peers to client_state, as only one thread calculates peers delta
         //and that is this thread, no need to put it in a common state and cause blocking
@@ -61,7 +65,7 @@ pub async fn torrent_refresh(
                     let new_peers_len = tracker_response.peers.as_ref().unwrap().len();
                     info!("First call to tracker, got {} new peers.", new_peers_len);
                     tracker_response
-                },
+                }
                 None => {
                     debug!("Tracker did not return back any response...");
                     return;
@@ -90,7 +94,10 @@ pub async fn torrent_refresh(
                     }
                 },
                 Err(e) => {
-                    error!("Tracker refresh did not return back any response...quitting : {}", e);
+                    error!(
+                        "Tracker refresh did not return back any response...quitting : {}",
+                        e
+                    );
                     return;
                 }
             };
@@ -105,13 +112,16 @@ pub async fn torrent_refresh(
             old_tracker_response = Some(match tracker_response {
                 Ok(v) => v,
                 Err(e) => {
-                    error!("Tracker refresh did not return back any response...quitting : {}", e);
+                    error!(
+                        "Tracker refresh did not return back any response...quitting : {}",
+                        e
+                    );
                     return;
                 }
             });
-            if new_peer.is_empty(){
+            if new_peer.is_empty() {
                 info!("Tracker refresh returned no new peer.")
-            }else{
+            } else {
                 info!("Tracker refresh returned {} new peer", new_peer.len());
                 let _ = peer_sender.send(TrackerResponse {
                     failure_reason: None,
@@ -136,7 +146,10 @@ pub async fn torrent_refresh(
                 return;
             }
         };
-        info!("Sleeping for  : {} seconds before next tracker refresh", secs);
+        info!(
+            "Sleeping for  : {} seconds before next tracker refresh",
+            secs
+        );
         // before sleeping, we need to deref all...scary
         thread::sleep(time::Duration::from_secs(secs as u64));
     }

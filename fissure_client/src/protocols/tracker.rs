@@ -1,12 +1,12 @@
 use crate::bee_processor::bee_decoder::BeeDecoderErr;
 use crate::models::client_meta::ClientTorrentMetaInfo;
 use crate::models::torrent_meta::{TrackerRequest, TrackerResponse};
+use log::debug;
 use reqwest;
 use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use log::{debug};
 
 #[derive(Debug)]
 pub struct TrackerRequestErr {

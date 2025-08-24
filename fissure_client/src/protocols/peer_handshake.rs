@@ -3,13 +3,13 @@ use crate::models::torrent_meta::Peer;
 use byteorder;
 use byteorder::ReadBytesExt;
 use hex;
+use log::{debug, error, info};
 use std::io::Cursor;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use log::{error, info, debug};
 
 #[allow(unused)]
 enum MessageID {
@@ -65,8 +65,8 @@ impl PeerConnection {
     ) -> Self {
         PeerConnection {
             conn: c,
-            //A separate bit field for each peer : 
-            bitfield: vec!["0".to_string(); (((bitfield_size / 8) as f64).ceil() * 8.0) as usize], 
+            //A separate bit field for each peer :
+            bitfield: vec!["0".to_string(); (((bitfield_size / 8) as f64).ceil() * 8.0) as usize],
             info_hash: ih,
             peer_id: pi,
             am_choking: true,
@@ -105,7 +105,10 @@ impl PeerConnection {
                 stream
                     .write(hex::decode(handshake_str).unwrap().as_slice())
                     .unwrap();
-                info!("Sending handshake to peer {} {}", peer_meta.ip, peer_meta.port);
+                info!(
+                    "Sending handshake to peer {} {}",
+                    peer_meta.ip, peer_meta.port
+                );
                 let mut data = [0; 1];
                 stream
                     .set_read_timeout(Some(Duration::from_secs(10)))

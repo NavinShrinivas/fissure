@@ -4,18 +4,17 @@ use crate::models::torrent_jobs;
 use crate::models::torrent_meta::Peer;
 use crate::models::torrent_meta::TrackerResponse;
 use crate::orchestration::{handshake_orechestration, job_orchestrator, torrent_refresh};
+use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use serde::{Deserialize, Serialize};
-
 
 //Represents the Client state from yaml settings file
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FissureClientOptions {
-    pub port: String, 
+    pub port: String,
     pub ip: String,
     pub version: String,
 }
@@ -23,9 +22,9 @@ pub struct FissureClientOptions {
 impl Default for FissureClientOptions {
     fn default() -> Self {
         FissureClientOptions {
-            port : "6001".to_string(),
+            port: "6001".to_string(),
             ip: "0.0.0.0".to_string(),
-            version: "0001".to_string()
+            version: "0001".to_string(),
         }
     }
 }
@@ -43,13 +42,15 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new_client(settings: &std::collections::HashMap<String, serde_yaml::value::Value>) -> Client {
+    pub fn new_client(
+        settings: &std::collections::HashMap<String, serde_yaml::value::Value>,
+    ) -> Client {
         //Peer id format : FS<4digit version><14 random char> : 20 chars long
 
         let client_options = crate::settingYaml::settingYaml::get_inner_value(
             settings,
             vec!["client".to_string()],
-            FissureClientOptions::default()
+            FissureClientOptions::default(),
         );
 
         Client {
@@ -81,7 +82,7 @@ impl Client {
     //         // ClientTorrentMetaInfo::from_torrent_file_meta(torrent_meta_file);
     //     // self.torrents.push(&transformed_torrent_meta);
     // }
-    pub async fn orchestrate_download(&self,arc_mutex_ctmi : Arc<RwLock<ClientTorrentMetaInfo>>) {
+    pub async fn orchestrate_download(&self, arc_mutex_ctmi: Arc<RwLock<ClientTorrentMetaInfo>>) {
         let arc_mutex_ctmi_inner = arc_mutex_ctmi.clone();
         let arc_mutex_ctmi_inner2 = arc_mutex_ctmi.clone();
 
@@ -94,15 +95,16 @@ impl Client {
             crossbeam_channel::bounded::<torrent_jobs::Job>(2000);
 
         //send finished (downloaded pieces) from peer state machines to file assembler
-        let (finished_job_snd, finished_job_recv) = crossbeam_channel::unbounded::<torrent_jobs::Job>();
+        let (finished_job_snd, finished_job_recv) =
+            crossbeam_channel::unbounded::<torrent_jobs::Job>();
 
         let (unfinished_job_snd_handshake, unfinished_job_recv_handshake) =
             (unfinished_job_snd.clone(), unfinished_job_recv.clone());
 
         let unfinished_job_snd_job_orchestrator = unfinished_job_snd.clone();
 
-        let peer_id1= self.peer_id.clone();
-        let peer_id2= self.peer_id.clone();
+        let peer_id1 = self.peer_id.clone();
+        let peer_id2 = self.peer_id.clone();
         let port = self.port.clone();
 
         tokio::spawn(async move {
@@ -111,7 +113,8 @@ impl Client {
                 &peer_id1,
                 &port,
                 peer_tracker_handshake_channel_tx,
-            ).await
+            )
+            .await
         });
 
         tokio::spawn(async move {
@@ -125,17 +128,30 @@ impl Client {
                 &peer_id2,
                 unfinished_job_snd_handshake,  //Given to state machine
                 unfinished_job_recv_handshake, //Given to state machine
-            ).await
-        });
-
-        tokio::spawn(async move {
-            job_orchestrator::job_orchestrator(
-                unfinished_job_snd_job_orchestrator,
-                &arc_mutex_ctmi.read().await.raw_torrent,
             )
             .await
         });
-        loop{
+
+        let piece_mem_rep = job_orchestrator::file_piece_memory_representation(
+            &arc_mutex_ctmi.read().await.raw_torrent,
+        );
+
+        //[TODO] If we are seeing too much contention in piece_mem_rep for job scheduler and piece assembler, we can create a clone for the job sched
+        let arc_mutex_piece_mem_rep = Arc::new(RwLock::new(piece_mem_rep));
+
+        tokio::spawn(async move {
+            job_orchestrator::job_orchestrator(
+                arc_mutex_piece_mem_rep,
+                unfinished_job_snd_job_orchestrator,
+            )
+            .await
+        });
+
+        //TODO : Piece assembler thread
+        //TODO : File assembler thread
+        //TODO : Tracker announcer thread
+
+        loop {
             // Busy wait
         }
     }

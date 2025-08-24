@@ -5,8 +5,8 @@ use crate::models::torrent_jobs;
 use crate::models::torrent_meta::TrackerResponse;
 use crate::protocols::peer_handshake::PeerConnection;
 use crate::protocols::peer_protocol_state_machine;
+use log::{debug, error, info};
 use std::{sync::Arc, thread::sleep, time::Duration};
-use log::{error, debug, info};
 
 pub async fn handshake_orchestrator(
     peers_rs: crossbeam_channel::Receiver<TrackerResponse>,
@@ -24,12 +24,12 @@ pub async fn handshake_orchestrator(
 
     debug!("Starting handshake_orchestrator");
     let mut retires = 10;
-    while retires > 0{
+    while retires > 0 {
         let delta_tracker_response = match peers_rs.recv() {
             Ok(resp) => resp,
             Err(err) => {
                 error!("Timeout receiving peer info from trackers, retrying handhsake routine. err : {}", err);
-                retires = retires-1;
+                retires = retires - 1;
                 sleep(Duration::from_secs_f32(2.0));
                 continue;
             }

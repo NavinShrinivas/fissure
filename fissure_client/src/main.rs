@@ -5,7 +5,7 @@ mod orchestration;
 mod protocols;
 mod settingYaml;
 
-//External crates : 
+//External crates :
 use clap::Parser;
 use env_logger::{Builder, Target};
 use log::{error, info, LevelFilter};
@@ -22,7 +22,6 @@ pub struct ClientEnv {
 
 #[tokio::main]
 async fn main() {
-
     static LOCAL_CLIENT_ENV: once_cell::sync::Lazy<ClientEnv> =
         once_cell::sync::Lazy::new(|| ClientEnv::parse());
 
@@ -33,7 +32,7 @@ async fn main() {
 
     let mut log_builder = Builder::from_default_env();
 
-    //Setting up client logging  : 
+    //Setting up client logging  :
     log_builder.target(Target::Stdout);
     log_builder.filter_module("tower_http::trace::make_span", LevelFilter::Warn);
     log_builder.filter_module("tower_http::trace::on_response", LevelFilter::Warn);
