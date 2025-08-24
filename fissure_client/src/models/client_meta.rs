@@ -4,16 +4,35 @@ use crate::models::torrent_jobs;
 use crate::models::torrent_meta::Peer;
 use crate::models::torrent_meta::TrackerResponse;
 use crate::orchestration::{handshake_orechestration, job_orchestrator, torrent_refresh};
-use crate::ClientEnv;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use serde::{Deserialize, Serialize};
+
+
+//Represents the Client state from yaml settings file
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FissureClientOptions {
+    pub port: String, 
+    pub ip: String,
+    pub version: String,
+}
+
+impl Default for FissureClientOptions {
+    fn default() -> Self {
+        FissureClientOptions {
+            port : "6001".to_string(),
+            ip: "0.0.0.0".to_string(),
+            version: "0001".to_string()
+        }
+    }
+}
 
 /*
   The client UI/Interface that needs transformations from
-  torrent meta data is stores as ClientTorrentMetaInfo
+  torrent meta data is stored as ClientTorrentMetaInfo
   The torrent functions still run using torrent_meta_info
 */
 
@@ -24,12 +43,19 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new_client(client_env: ClientEnv) -> Client {
+    pub fn new_client(settings: &std::collections::HashMap<String, serde_yaml::value::Value>) -> Client {
         //Peer id format : FS<4digit version><14 random char> : 20 chars long
+
+        let client_options = crate::settingYaml::settingYaml::get_inner_value(
+            settings,
+            vec!["client".to_string()],
+            FissureClientOptions::default()
+        );
+
         Client {
-            peer_id: helper::generate_peer_id(&client_env),
+            peer_id: helper::generate_peer_id(&client_options),
             torrents: HashMap::new(),
-            port: client_env.port,
+            port: client_options.port,
         }
     }
     pub fn add_torrent_using_file_path(&mut self, torrent_file_path: String) -> String {
@@ -58,15 +84,23 @@ impl Client {
     pub async fn orchestrate_download(&self,arc_mutex_ctmi : Arc<RwLock<ClientTorrentMetaInfo>>) {
         let arc_mutex_ctmi_inner = arc_mutex_ctmi.clone();
         let arc_mutex_ctmi_inner2 = arc_mutex_ctmi.clone();
+
+        //Send peers from tracker to handshake :
         let (peer_tracker_handshake_channel_tx, peer_tracker_handshake_channel_rx) =
             crossbeam_channel::bounded::<TrackerResponse>(300);
+
+        //Send unfinished jobs/pending jobs to peer state machine
         let (unfinished_job_snd, unfinished_job_recv) =
             crossbeam_channel::bounded::<torrent_jobs::Job>(2000);
+
+        //send finished (downloaded pieces) from peer state machines to file assembler
+        let (finished_job_snd, finished_job_recv) = crossbeam_channel::unbounded::<torrent_jobs::Job>();
+
         let (unfinished_job_snd_handshake, unfinished_job_recv_handshake) =
             (unfinished_job_snd.clone(), unfinished_job_recv.clone());
+
         let unfinished_job_snd_job_orchestrator = unfinished_job_snd.clone();
-        //[TODO]
-        // let (finished_job_snd, finished_job_recv) = crossbeam_channel::unbounded::<torrent_jobs::Job>();
+
         let peer_id1= self.peer_id.clone();
         let peer_id2= self.peer_id.clone();
         let port = self.port.clone();

@@ -13,6 +13,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::Read;
+use log::{error, info};
 
 #[derive(Debug)]
 pub struct BeeDecoderErr {
@@ -32,7 +33,7 @@ impl MetaInfo {
         let mut torrent_file = match File::open(torrent_file_path) {
             Ok(f) => f,
             Err(e) => {
-                println!("[ERROR] Possible that the path doesn't exist, read the below logs to know more.");
+                error!("[ERROR] Possible that the path doesn't exist, read the below logs to know more.");
                 return Err(BeeDecoderErr {
                     error_string: e.to_string(),
                 });
@@ -42,7 +43,7 @@ impl MetaInfo {
         let file_size = match torrent_file.read_to_end(&mut torrent_file_content) {
             Ok(size) => size,
             Err(e) => {
-                println!("[ERROR] Error reading file, possible not enough permissions, check below logs to know more.");
+                error!("[ERROR] Error reading file, possible not enough permissions, check below logs to know more.");
                 return Err(BeeDecoderErr {
                     error_string: e.to_string(),
                 });
@@ -51,22 +52,22 @@ impl MetaInfo {
         let meta_info: MetaInfo = match from_bytes(&torrent_file_content) {
             Ok(des) => des,
             Err(e) => {
-                println!("[ERROR] Something went wrong deserializing torrent file content, maybe corrupted. Check below logs for more.");
+                error!("[ERROR] Something went wrong deserializing torrent file content, maybe corrupted. Check below logs for more.");
                 return Err(BeeDecoderErr {
                     error_string: e.to_string(),
                 });
             }
         };
-        println!(
+        info!(
             "Torrent file {} read. Size of file in characters : {}",
             torrent_file_path, file_size
         );
         //Debug print :
         // println!("{:#?}", meta_info);
-        println!("Adding the following torrent to list : ");
-        println!("\t name : {:?}", meta_info.info.name);
-        println!("\t announce url : {:?}", meta_info.announce);
-        println!("\t files :");
+        info!("Adding the following torrent to tracked list : ");
+        info!("\t name : {:?}", meta_info.info.name);
+        info!("\t announce url : {:?}", meta_info.announce);
+        info!("\t files :");
         meta_info.print_files();
         return Ok(meta_info);
     }

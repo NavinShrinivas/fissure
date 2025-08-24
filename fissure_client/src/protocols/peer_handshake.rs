@@ -9,6 +9,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use log::{error, info, debug};
 
 #[allow(unused)]
 enum MessageID {
@@ -64,7 +65,8 @@ impl PeerConnection {
     ) -> Self {
         PeerConnection {
             conn: c,
-            bitfield: vec!["0".to_string(); (((bitfield_size / 8) as f64).ceil() * 8.0) as usize],
+            //A separate bit field for each peer : 
+            bitfield: vec!["0".to_string(); (((bitfield_size / 8) as f64).ceil() * 8.0) as usize], 
             info_hash: ih,
             peer_id: pi,
             am_choking: true,
@@ -80,14 +82,13 @@ impl PeerConnection {
         peer_id: String,
     ) -> Self {
         //Pretty much does handshake
-        println!("connecting..");
+        info!("\tconnecting..");
         let client_torrent_meta_info = client_torrent_meta_info_arc_mutex.read().await;
         let mut handshake_str: String = String::new();
         // we need the string to be fully hex, we decode to binary and shoot it to TCP
         // 19 decimal in hex : 0x13
         handshake_str = format!("{}{}", handshake_str, "13");
         handshake_str = format!("{}{}", handshake_str, hex::encode("BitTorrent protocol"));
-        // println!("{:?}", peer_meta);
         // 8 bytes being 0 in hex is 16 0's
         handshake_str = format!("{}{}", handshake_str, "0000000000000000");
         handshake_str = format!(
@@ -96,14 +97,15 @@ impl PeerConnection {
             hex::encode(client_torrent_meta_info.info_hash)
         );
         handshake_str = format!("{}{}", handshake_str, hex::encode(peer_id));
-        // println!("{}", handshake_str);
+        debug!("\thandshake string : {}", handshake_str);
         match TcpStream::connect(format!("{}:{}", peer_meta.ip, peer_meta.port)) {
             Ok(mut stream) => {
                 // println!("Successfully connected to server in port 3333");
+                debug!("connected to peer: {} {}", peer_meta.ip, peer_meta.port);
                 stream
                     .write(hex::decode(handshake_str).unwrap().as_slice())
                     .unwrap();
-                // println!("Sent handshake...");
+                info!("Sending handshake to peer {} {}", peer_meta.ip, peer_meta.port);
                 let mut data = [0; 1];
                 stream
                     .set_read_timeout(Some(Duration::from_secs(10)))
@@ -111,21 +113,12 @@ impl PeerConnection {
                 match stream.read_exact(&mut data) {
                     Ok(_) => {
                         let pstr_len = Cursor::new(data).read_u8().unwrap() as usize;
-                        // println!("handling handshake response...{}", pstr_len);
                         if pstr_len != 0 {
                             let mut data = vec![0u8; 48 + pstr_len];
                             stream.read(&mut data).unwrap();
-                            // println!(
-                            //     "infohash : {:?}",
-                            //     hex::encode(&data[pstr_len + 8..pstr_len + 8 + 20])
-                            // );
                             let res_peer_id = String::from_utf8(data[pstr_len + 8 + 20..].to_vec())
                                 .unwrap_or("".to_string());
-                            // if peer_meta.peer_id != Some(res_peer_id.clone()){
-                            //     stream.shutdown(std::net::Shutdown::Both);
-                            //     panic!("Invalid peer id, aborting connection.")
-                            // }
-                            println!("Connected to : {:?}", res_peer_id);
+                            info!("handshake completed with peer : {:?}", res_peer_id);
                         } else {
                             panic!("Message length should not be 0...");
                         }

@@ -6,6 +6,7 @@ use std::error::Error;
 use std::fmt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use log::{debug};
 
 #[derive(Debug)]
 pub struct TrackerRequestErr {
@@ -44,7 +45,7 @@ pub async fn refresh_peer_list_from_tracker(
 
     let url_with_parameters = format!("{}?{}", client_torrent_meta_info.raw_torrent.announce, qs);
     // Needs to be debug
-    println!("Making request to tracker : {}", url_with_parameters);
+    debug!("Making request to tracker : {}", url_with_parameters);
 
     let res = req_client
         .get(url_with_parameters)
@@ -55,9 +56,8 @@ pub async fn refresh_peer_list_from_tracker(
         .text_with_charset("WINDOWS-1252")
         .await
         .expect("Error opening body from response, maybe connection got interrupted.");
-    println!("here");
     let resp = TrackerResponse::from_raw_text_response_body(raw_body);
-    println!("{:?}", resp);
+    debug!("{:?}", resp);
     return resp;
 
     //mutex is dropped after scope

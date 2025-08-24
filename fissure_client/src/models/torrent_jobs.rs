@@ -5,7 +5,7 @@ pub struct Job {
     pub begin: u64,
     pub length: u64,
     /// Needs to be in bytes
-    pub chunks: Vec<u8>, // We default to 16KB blocks!
+    pub chunk_data: Vec<u8>, // We default to 16KB blocks!
 }
 
 impl Job {
@@ -14,7 +14,7 @@ impl Job {
             index,
             begin,
             length,
-            chunks: vec![u8::from(0); length as usize],
+            chunk_data: vec![u8::from(0); length as usize],
         }
     }
     pub fn new_job_from_piece_process(pp: PieceProcess) -> Self {
@@ -23,9 +23,10 @@ impl Job {
             Chunk::PartialChunk(i, _) => i.into(),
         };
         Self::new(
-            pp.index as u64,
-            (pp.nth_chunk - 1) as u64 * 16384 as u64,
-            length,
+            pp.index as u64, //index
+            length,//length of chunk
+            //offset within piece (i.e start pos of this chunk)
+            (pp.nth_chunk - 1) as u64 * 16384 as u64, 
         )
     }
 }

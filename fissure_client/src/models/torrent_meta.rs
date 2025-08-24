@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use urlencoding;
+use log::{info};
+use byte_unit::{self, UnitType};
 // If I'd have to match to a different name
 // #[serde(rename = "piece length")]
 
@@ -53,11 +55,17 @@ impl MetaInfo {
         let files = self.files();
         for (index, content) in files.iter().enumerate() {
             let path_buf: PathBuf = content.path.iter().collect();
-            println!(
-                "\t\t {}. path : {:?}, size :{} MB",
+            let bytes = byte_unit::Byte::from_u64(content.length);
+
+            let adjusted_bytes = bytes.get_appropriate_unit(UnitType::Binary);
+
+            let two_digit = format!("{adjusted_bytes:.2}");
+
+            info!(
+                "\t\t {}. path : {:?}, size :{}",
                 index + 1,
                 path_buf,
-                content.length / 1000000
+                two_digit
             );
         }
     }

@@ -2,6 +2,7 @@ use crate::models::torrent_meta::MetaInfo;
 use crate::models::torrent_jobs;
 use crossbeam_channel;
 use rand::Rng;
+use log::{error, debug, info};
 
 
 /* Hirerarchy files in torrents : 
@@ -24,7 +25,7 @@ pub enum Chunk {
 
 #[derive(Clone)]
 pub struct PieceProcess {
-    pub index: usize,
+    pub index: usize, //indeox of piece
     pub nth_chunk: usize, //1-indexed chunk pointer
     pub chunk: Chunk,
 }
@@ -88,7 +89,6 @@ pub async fn job_orchestrator(
 ) {
     // Needs to determines chunks from pieces and send it across channel
     // Processing to create a "state" of all possible chunks
-    println!("[DEBUG] starting job orchestration");
     let raw_torrent = &torrent_meta_info.info;
     let mut piece_state = PieceProcess::torrent_piece_state(
         raw_torrent.length.unwrap() as usize,
@@ -109,7 +109,7 @@ pub async fn job_orchestrator(
             }
         }
     }
-    println!("tot size : {}, chunks : {}", tot_len, chunks);
+    info!("tot size : {}, chunks : {}", tot_len, chunks);
     loop {
         if piece_state.len() == 0 {
             break;

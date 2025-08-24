@@ -1,8 +1,8 @@
-use crate::ClientEnv;
+use crate::models::client_meta::FissureClientOptions;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 
-pub fn generate_peer_id(client_env: &ClientEnv) -> String {
+pub fn generate_peer_id(client_env: &FissureClientOptions) -> String {
     let id = "FS";
     let rand_string: String = thread_rng()
         .sample_iter(&Alphanumeric)
