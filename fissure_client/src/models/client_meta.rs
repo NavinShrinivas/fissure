@@ -121,6 +121,8 @@ impl Client {
             &arc_mutex_ctmi.read().await.raw_torrent,
         ));
 
+        let piece_mem_rep_state_machine_clone = piece_mem_rep.clone();
+
         //too much contention in piece_mem_rep for job scheduler and piece assembler
 
         tokio::spawn(async move {
@@ -134,7 +136,7 @@ impl Client {
                 &peer_id2,
                 unfinished_job_snd_handshake,  //Given to state machine
                 unfinished_job_recv_handshake, //Given to state machine
-                piece_mem_rep.clone(),
+                piece_mem_rep_state_machine_clone, //passed to state machine for upload
             )
             .await
         });
