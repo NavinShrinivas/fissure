@@ -1,6 +1,6 @@
 use tokio::sync::RwLock;
 
-use crate::models::client_meta::ClientTorrentMetaInfo;
+use crate::{models::client_meta::ClientTorrentMetaInfo, orchestration::job_orchestrator::MemoryPiece};
 use crate::models::torrent_jobs;
 use crate::models::torrent_meta::TrackerResponse;
 use crate::protocols::peer_handshake::PeerConnection;
@@ -14,6 +14,7 @@ pub async fn handshake_orchestrator(
     peer_id: &str,
     unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
     unfinished_job_recv: crossbeam_channel::Receiver<torrent_jobs::Job>,
+    piece_mem_rep_map: Arc<dashmap::DashMap<usize, MemoryPiece>>, //passed to state machine for upload
 ) {
     //The channel only sends new peer, we do handshake get back the PeerConnection and spawn a
     //peer protcol thread, maintaining a thread pool
@@ -45,6 +46,7 @@ pub async fn handshake_orchestrator(
         //We have a MPMC channel to communicate between workers thread and the job scheduler.
         for i in new_peer_list {
             let ctmi_inner_clone = client_torrent_meta_info_arc_mutex.clone();
+            let piece_mem_rep_map_clone = piece_mem_rep_map.clone();
             let peer_id_inner = peer_id.to_string();
             let (s, r) = (unfinished_job_snd.clone(), unfinished_job_recv.clone());
             debug!("Spawning new thread for new peer : {} ", peer_id_inner);
@@ -55,7 +57,7 @@ pub async fn handshake_orchestrator(
                     peer_id_inner,
                 )
                 .await;
-                peer_protocol_state_machine::state_machine(peer_connection_inner, r, s);
+                peer_protocol_state_machine::state_machine(peer_connection_inner, r, s, piece_mem_rep_map_clone);
                 // We need to spawn peer_protocol thread on the above peer_connection_inner and
                 // provide it a job recv of MPMC
             });

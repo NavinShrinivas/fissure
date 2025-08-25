@@ -117,6 +117,12 @@ impl Client {
             .await
         });
 
+        let piece_mem_rep = Arc::new(job_orchestrator::file_piece_memory_representation(
+            &arc_mutex_ctmi.read().await.raw_torrent,
+        ));
+
+        //too much contention in piece_mem_rep for job scheduler and piece assembler
+
         tokio::spawn(async move {
             //handshake_orchestrator first initiates a connection to each peer from peer_tracker channel
             //and spawns a peer_protocol state machine for each connection, where each state machine
@@ -128,20 +134,15 @@ impl Client {
                 &peer_id2,
                 unfinished_job_snd_handshake,  //Given to state machine
                 unfinished_job_recv_handshake, //Given to state machine
+                piece_mem_rep.clone(),
             )
             .await
         });
 
-        let piece_mem_rep = job_orchestrator::file_piece_memory_representation(
-            &arc_mutex_ctmi.read().await.raw_torrent,
-        );
-
-        //[TODO] If we are seeing too much contention in piece_mem_rep for job scheduler and piece assembler, we can create a clone for the job sched
-        let arc_mutex_piece_mem_rep = Arc::new(RwLock::new(piece_mem_rep));
 
         tokio::spawn(async move {
             job_orchestrator::job_orchestrator(
-                arc_mutex_piece_mem_rep,
+                piece_mem_rep,
                 unfinished_job_snd_job_orchestrator,
             )
             .await

@@ -1,5 +1,6 @@
 use crate::models::torrent_jobs;
 use crate::models::torrent_jobs::Job;
+use crate::orchestration::job_orchestrator::MemoryPiece;
 use crate::protocols::peer_handshake::PeerConnection;
 use byteorder;
 use byteorder::BigEndian;
@@ -8,6 +9,7 @@ use crossbeam_channel;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::time::Duration;
 
 use log::{debug, error, info};
@@ -34,6 +36,7 @@ pub fn state_machine(
     mut conn: PeerConnection,
     unfinished_job_recv: crossbeam_channel::Receiver<torrent_jobs::Job>,
     unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
+    piece_mem_rep_map: Arc<dashmap::DashMap<usize, MemoryPiece>>, //used only in read capacity in this function for uploaddaIW
 ) {
     let mut stream = conn.conn;
     let mut pipelined = 0;
@@ -127,6 +130,7 @@ pub fn state_machine(
                         }
                     };
                     match id {
+                        //[TODO] Implement Choking dynamics
                         0 => {
                             // Choking us
                             conn.peer_choking = true;
@@ -179,7 +183,9 @@ pub fn state_machine(
                             debug!("bitfield recvd...")
                         }
                         6 => {
-                            //UPLOADING
+                            //UPLOADING - Read from piece_mem_rep_map and upload
+                            // https://github.com/xacrimon/dashmap/issues/243#issuecomment-1370273098
+                            // [CRITICAL] DO NOT AWAIT ACROSS DASHMAP READS
                             // For future expansion, to uploading capabilties at the moment
                             continue;
                         }

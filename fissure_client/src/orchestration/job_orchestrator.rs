@@ -7,6 +7,7 @@ use crate::models::torrent_jobs;
 use crate::{models::torrent_meta::MetaInfo, orchestration::job_orchestrator};
 use byte_unit::Byte;
 use crossbeam_channel;
+use dashmap::DashMap;
 use log::{debug, error, info};
 use rand::Rng;
 use tokio::sync::RwLock;
@@ -108,11 +109,11 @@ impl MemoryPiece {
 
 pub fn file_piece_memory_representation(
     torrent_meta_info: &MetaInfo, //Non Client torrent meta info
-) -> Vec<MemoryPiece> {
+) -> DashMap<usize, MemoryPiece> {
     // Needs to determines chunks from pieces and send it across channel
     // Processing to create a "state" of all possible chunks
     let raw_torrent = &torrent_meta_info.info;
-    let piece_state = MemoryPiece::torrent_piece_state(
+    let mut piece_state = MemoryPiece::torrent_piece_state(
         raw_torrent.length.unwrap() as usize,
         raw_torrent.piece_length as usize,
         torrent_meta_info,
@@ -134,6 +135,18 @@ pub fn file_piece_memory_representation(
             }
         }
     }
+    let piece_state_map = DashMap::new();
+
+    loop{
+        let p = piece_state.pop();
+        match p {
+            Some(mem_piece) => {
+                piece_state_map.insert(mem_piece.index, mem_piece);
+            }
+            None => break,
+        }
+    }
+
     let bytes = byte_unit::Byte::from_u64(tot_len as u64);
     let human_readable = bytes
         .get_appropriate_unit(byte_unit::UnitType::Binary)
@@ -143,17 +156,15 @@ pub fn file_piece_memory_representation(
         human_readable, chunks
     );
 
-    return piece_state;
+    return piece_state_map;
 }
 pub async fn job_orchestrator(
-    arc_mutex_piece_mem_rep: Arc<RwLock<Vec<MemoryPiece>>>,
+    piece_state_map: Arc<DashMap<usize, MemoryPiece>>,
     unfinished_job_snd: crossbeam_channel::Sender<torrent_jobs::Job>,
 ) {
     let mut schedule_pieces: HashSet<u32> = HashSet::new();
 
-    let piece_mem_rep_read = arc_mutex_piece_mem_rep.read().await;
-    let total_pieces = piece_mem_rep_read.len();
-    drop(piece_mem_rep_read);
+    let total_pieces = piece_state_map.len();
     loop {
         if unfinished_job_snd.len() > 60 {
             // We dont buffer more than 60 pieces, [TODO] we might want to write some logic to see if
@@ -163,21 +174,26 @@ pub async fn job_orchestrator(
             //These 60 piece can be part of different pieces. If we have 60 dead chunks, this logic will get stuck
             continue;
         } else {
+
             //=====reading contentioned space=========
-            let piece_mem_rep_read = arc_mutex_piece_mem_rep.read().await;
             let mut rng = rand::thread_rng();
             let mut random_index = rng.gen_range(0..total_pieces);
             while schedule_pieces.contains(&(random_index as u32)) {
                 random_index = rng.gen_range(0..total_pieces);
             }
-            let chunks_to_be_scheduled = piece_mem_rep_read[random_index].chunks.clone();
-            drop(piece_mem_rep_read);
+            let chunks_to_be_scheduled = match piece_state_map.get(&random_index){
+                Some(v) => v.chunks.clone(),
+                None => {
+                    error!("Error reading piece state map for index : {}", random_index);
+                    continue;
+                }
+            };
             //===========done reading================
 
             schedule_pieces.insert(random_index as u32);
-            for c in chunks_to_be_scheduled.iter() {
+            for c in chunks_to_be_scheduled.into_iter() {
                 let job =
-                    torrent_jobs::Job::new_job_from_piece_process(random_index as u32, c.clone());
+                    torrent_jobs::Job::new_job_from_piece_process(random_index as u32, c);
                 let s = unfinished_job_snd.clone();
                 debug!(
                     "Scheduling piece index : {} and chunk offset : {} out of total pieces : {}",
