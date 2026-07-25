@@ -1,6 +1,7 @@
-use crate::models::client_meta::FissureClientOptions;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+
+use crate::managers::client_manager::FissureClientOptions;
 
 pub fn generate_peer_id(client_env: &FissureClientOptions) -> String {
     let id = "FS";

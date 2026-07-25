@@ -46,7 +46,7 @@ pub fn get_inner_value<T: serde::de::DeserializeOwned>(
                 };
             }
             None => {
-                log::error!("Error derefrencing in settings yaml, couldnt find the said key!");
+                log::error!("Error derefrencing in settings yaml, couldnt find the said key : {:?}! Continuing", deref_vec);
                 return default_value_when_anything_not_found;
             }
         }

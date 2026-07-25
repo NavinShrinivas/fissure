@@ -7,7 +7,6 @@
 */
 
 use crate::models::torrent_meta::MetaInfo;
-use crate::models::torrent_meta::TrackerResponse;
 use log::{error, info};
 use serde_bencoded::from_bytes;
 use std::error::Error;
@@ -16,25 +15,39 @@ use std::fs::File;
 use std::io::Read;
 
 #[derive(Debug)]
-pub struct BeeDecoderErr {
+pub struct FissureErr {
     error_string: String,
 }
 
-impl fmt::Display for BeeDecoderErr {
+impl fmt::Display for FissureErr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self.error_string)
     }
 }
 
-impl Error for BeeDecoderErr {}
+impl Error for FissureErr {}
+
+impl From<std::io::Error> for FissureErr{
+    fn from(value: std::io::Error) -> Self {
+        FissureErr::new(value.to_string())
+    }
+}
+
+impl FissureErr{
+    pub fn new(error: String) -> Self {
+        Self{
+            error_string: error
+        }
+    }
+}
 
 impl MetaInfo {
-    pub fn new(torrent_file_path: &str) -> Result<MetaInfo, BeeDecoderErr> {
+    pub fn new(torrent_file_path: &str) -> Result<MetaInfo, FissureErr> {
         let mut torrent_file = match File::open(torrent_file_path) {
             Ok(f) => f,
             Err(e) => {
                 error!("[ERROR] Possible that the path doesn't exist, read the below logs to know more.");
-                return Err(BeeDecoderErr {
+                return Err(FissureErr {
                     error_string: e.to_string(),
                 });
             }
@@ -44,7 +57,7 @@ impl MetaInfo {
             Ok(size) => size,
             Err(e) => {
                 error!("[ERROR] Error reading file, possible not enough permissions, check below logs to know more.");
-                return Err(BeeDecoderErr {
+                return Err(FissureErr {
                     error_string: e.to_string(),
                 });
             }
@@ -53,7 +66,7 @@ impl MetaInfo {
             Ok(des) => des,
             Err(e) => {
                 error!("[ERROR] Something went wrong deserializing torrent file content, maybe corrupted. Check below logs for more.");
-                return Err(BeeDecoderErr {
+                return Err(FissureErr {
                     error_string: e.to_string(),
                 });
             }
@@ -73,14 +86,4 @@ impl MetaInfo {
     }
 }
 
-impl TrackerResponse {
-    pub fn from_raw_text_response_body(raw_text: String) -> Result<TrackerResponse, BeeDecoderErr> {
-        match serde_bencoded::from_str(&raw_text.to_string()) {
-            Ok(res) => Ok(res),
-            Err(e) => Err(BeeDecoderErr {
-                error_string: "[ERROR] Error decoding tracker response from bencoding.".to_string()
-                    + &e.to_string(),
-            }),
-        }
-    }
-}
+

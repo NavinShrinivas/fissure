@@ -22,3 +22,11 @@
 
 - Reduce dependance on locks
 - get this actually working (Atleast for single file)
+
+## Limitation 
+
+### Ones that I inted to solve : 
+[ ] Multi folders/multi file downloads - Havent checked if this client works for this case
+[ ] Doesnt implement a strong tit for tat economics mechanisim
+
+### Ones that I dont intend to solve : 
