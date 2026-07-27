@@ -4,7 +4,7 @@ use bitvec::{prelude::*, ptr::hash};
 use sha1::{Digest, Sha1};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::managers::piece_manager::PieceRequestManagerMessage::{BlockRecived, BlocksToRequest};
+use crate::managers::piece_manager::PieceRequestManagerMessage::{BlockRecived, BlocksToRequest, GetData};
 
 
 #[derive(Debug)]
@@ -138,6 +138,22 @@ impl PieceRequestManagerActor{
                                     }
                                     log::debug!("Recieved a block from peer!!");
                                 }, 
+                                GetData { start_offset, end_offset, sender } => {
+                                    let start = start_offset as usize;
+                                    let end = end_offset as usize;
+
+                                    let slice = if end <= self.data.len() && start <= end {
+                                        self.data[start..end].to_vec()
+                                    } else {
+                                        log::error!(
+                                            "GetData out-of-bounds request: [{}, {}) but data len is {}",
+                                            start, end, self.data.len()
+                                        );
+                                        Vec::new()
+                                    };
+
+                                    let _ = sender.send(slice);
+                                },
                                 _ => {
                                     log::error!("Unkown message recived in piece manager : {:?}", msg)
                                 }
@@ -186,9 +202,11 @@ pub enum PieceRequestManagerMessage{
         //to the peer, the peer in turn will inform the 
         //manager to trigger the flush to disk
     },
-    FlushToDisk{
-
-    }
+    GetData {
+        start_offset: u64,
+        end_offset: u64,
+        sender: oneshot::Sender<Vec<u8>>,
+    },
 
 }
 
@@ -212,7 +230,6 @@ impl PieceRequestManager{
             piece_length: p_len,
             send
         }
-
     }
     pub async fn block_recvied(&self, block_offset: usize, data: Vec<u8> ) -> bool{
         let (tx,rx) = oneshot::channel::<bool>();
@@ -233,6 +250,17 @@ impl PieceRequestManager{
                 Vec::new()
             }
         }
+    }
+
+    pub async fn get_data_with_offset(&self, start_offset: u64, end_offset: u64) -> Vec<u8>{
+        let (tx, rx) = oneshot::channel::<Vec<u8>>();
+        let _ = self.send.send(PieceRequestManagerMessage::GetData {
+            start_offset,
+            end_offset,
+            sender: tx,
+        }).await;
+
+        rx.await.unwrap_or_default()
     }
 }
 

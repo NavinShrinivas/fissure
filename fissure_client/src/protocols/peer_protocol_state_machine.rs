@@ -1,4 +1,5 @@
 use crate::managers::piece_manager::PieceRequestManager;
+use crate::managers::torrent_manager::TorrentManager;
 use crate::models::peer_messages::{PeerCodec, PeerMessage};
 use crate::protocols::peer_handshake::{PeerConnection};
 use futures::{SinkExt, StreamExt};
@@ -8,17 +9,144 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{ AtomicU64};
 use std::time::{Duration};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::{Notify, RwLock};
 use rand::prelude::*;
 
 use log::{debug, error, info};
 
+const MAX_INFLIGHT: u64 = 25;
+const MAX_ACTIVE_PIECES: u64 = 5;
 
 pub struct PeerFSMNetworkState{
     pub pending_active_request_count: AtomicU64,
     pub inflight_messages: AtomicU64, //number of block reqs in flight
     pub active_requests : RwLock<HashMap<u64, Arc<PieceRequestManager>>>,
-    pub state_update: Notify
+    pub state_update: Notify, //real state changes: choke/unchoke/interest/bitfield/have
+    pub block_acked: Notify, //fired on every received block - only used to top off the request window
+}
+
+/// Requests more blocks from a single (randomly chosen) active piece, up to the inflight cap.
+/// Returns `Some(made_progress)` normally, or `None` if the socket write failed (caller should stop).
+async fn top_off_inflight_window(
+    network_state: &Arc<PeerFSMNetworkState>,
+    framed_writer: &mut Framed<OwnedWriteHalf, PeerCodec>,
+    is_choked: bool,
+) -> Option<bool> {
+    if is_choked {
+        return Some(false);
+    }
+
+    let inflight_count = network_state.inflight_messages.load(SeqCst);
+    if inflight_count >= MAX_INFLIGHT {
+        return Some(false);
+    }
+    let available_window = (MAX_INFLIGHT - inflight_count) as usize;
+
+    let total_items = network_state.active_requests.read().await.len();
+    if total_items == 0 {
+        return Some(false);
+    }
+
+    let target_index = {
+        let mut rng = rand::thread_rng();
+        rng.gen_range(0..total_items)
+    };
+
+    let picked = {
+        let guard = network_state.active_requests.read().await;
+        guard.iter().nth(target_index).map(|(_, v)| v.clone())
+    };
+
+    let Some(c) = picked else {
+        return Some(false);
+    };
+
+    let req_pieces = c.request_block(available_window as u32).await;
+    if req_pieces.is_empty() {
+        return Some(false);
+    }
+
+    let mut made_progress = false;
+    for p in req_pieces {
+        let msg = PeerMessage::Request {
+            piece_index: c.index,
+            block_offset: p.0,
+            length: p.1,
+        };
+
+        if framed_writer.send(msg).await.is_ok() {
+            network_state.inflight_messages.fetch_add(1, SeqCst);
+            made_progress = true;
+        } else {
+            log::error!("FSM: Could not send new block request.");
+            return None;
+        }
+    }
+    Some(made_progress)
+}
+
+/// Lightweight path for a block-ack wakeup: only top off the request window.
+/// Does NOT re-check interest state or acquire new pieces - that's the full pass's job.
+async fn run_window_topoff(
+    peer_state: &Arc<RwLock<PeerConnection>>,
+    network_state: &Arc<PeerFSMNetworkState>,
+    framed_writer: &mut Framed<OwnedWriteHalf, PeerCodec>,
+) -> bool {
+    let is_choked = peer_state.read().await.state.peer_choking;
+    loop {
+        match top_off_inflight_window(network_state, framed_writer, is_choked).await {
+            Some(true) => continue,
+            Some(false) => return true,
+            None => return false,
+        }
+    }
+}
+
+/// Full pass: send Interested if useful, top off active pieces up to the cap, and top off the
+/// request window. Runs on real state changes and on the periodic safety-net tick.
+async fn run_full_pass(
+    peer_state: &Arc<RwLock<PeerConnection>>,
+    manager: &TorrentManager,
+    network_state: &Arc<PeerFSMNetworkState>,
+    framed_writer: &mut Framed<OwnedWriteHalf, PeerCodec>,
+) -> bool {
+    loop {
+        let (is_choked, has_useful, is_interested) = {
+            let s = peer_state.read().await;
+            (s.state.peer_choking, s.state.has_useful_pieces, s.state.am_interested)
+        };
+
+        if has_useful && !is_interested {
+            if framed_writer.send(PeerMessage::Interested).await.is_ok() {
+                peer_state.write().await.state.am_interested = true;
+            } else {
+                log::warn!("FSM: Could not send interested request.");
+                return false;
+            }
+        }
+
+        let mut made_progress = false;
+
+        let active_pieces_count = network_state.pending_active_request_count.load(SeqCst);
+        if !is_choked && active_pieces_count < MAX_ACTIVE_PIECES {
+            let peer_id = peer_state.read().await.state.peer_id.clone().unwrap();
+            if let Some(req) = manager.request_piece(peer_id).await {
+                network_state.active_requests.write().await.insert(req.index, req);
+                network_state.pending_active_request_count.fetch_add(1, SeqCst);
+                made_progress = true;
+            }
+        }
+
+        match top_off_inflight_window(network_state, framed_writer, is_choked).await {
+            Some(progressed) => made_progress = made_progress || progressed,
+            None => return false,
+        }
+
+        if !made_progress {
+            return true;
+        }
+    }
 }
 
 
@@ -30,7 +158,8 @@ pub async fn state_machine(
         pending_active_request_count: AtomicU64::new(0),
         inflight_messages: AtomicU64::new(0),
         active_requests: RwLock::new(HashMap::new()),
-        state_update: Notify::new()
+        state_update: Notify::new(),
+        block_acked: Notify::new(),
     });
     // This moves ownership of the socket out, leaving the rest of the struct intact.
     let conn = peer_conn.conn.take().expect("Connection already used up.");
@@ -50,8 +179,8 @@ pub async fn state_machine(
 
         loop {
             interval.tick().await;
-
             let still_active_requests = match watchdog_manager_handler
+
                 .update_and_get_active_request_count(peer_id_key.clone()).await 
             {
                 Some(active) => active,
@@ -85,91 +214,44 @@ pub async fn state_machine(
         let mut framed_writer = Framed::new(writer, PeerCodec::new());
 
         let mut request_ticker = tokio::time::interval(std::time::Duration::from_secs(2));
-        let mut notification = writer_network_state.state_update.notified();
+        let mut state_notified = writer_network_state.state_update.notified();
+        let mut block_notified = writer_network_state.block_acked.notified();
+        tokio::pin!(state_notified);
+        tokio::pin!(block_notified);
+        
+        // Startup pass: send Interested / kick off initial piece + block requests.
+        if !run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await {
+            return;
+        }
 
         loop {
-            loop {
-                let (is_choked, has_useful, is_interested) = {
-                    let s = writer_peer_state.read().await;
-                    (s.state.peer_choking, s.state.has_useful_pieces, s.state.am_interested)
-                };
+            enum Wake { State, Block, Tick }
 
-                if has_useful && !is_interested {
-                    //We dont bother whether we are choked or not, just indicate we are interested if so
-                    if framed_writer.send(PeerMessage::Interested).await.is_ok() {
-                        writer_peer_state.write().await.state.am_interested = true;
-                    } else {
-                        log::warn!("FSM: Could not send interested request.");
-                        return;
-                    }
+            let wake = tokio::select! {
+                _ = &mut state_notified => Wake::State,
+                _ = &mut block_notified => Wake::Block,
+                _ = request_ticker.tick() => Wake::Tick,
+            };
+
+            let ok = match wake {
+                Wake::State => {
+                    state_notified.set(writer_network_state.state_update.notified());
+                    run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await
                 }
-
-                let mut made_progress = false;
-
-                // Top off active pieces up to 5
-                let active_pieces_count = writer_network_state.pending_active_request_count.load(SeqCst);
-                if !is_choked && active_pieces_count < 5 {
-                    let peer_id = writer_peer_state.read().await.state.peer_id.clone().unwrap();
-                    if let Some(_req) = writer_manager_handler.request_piece(peer_id).await {
-                        writer_network_state.active_requests.write().await.insert(_req.index, _req);
-                        writer_network_state.pending_active_request_count.fetch_add(1, SeqCst);
-                        made_progress = true;
-                    }
+                Wake::Block => {
+                    block_notified.set(writer_network_state.block_acked.notified());
+                    // Lightweight path - a block being acked only ever needs the request
+                    // window topped off, not a full re-evaluation (new piece / interest state).
+                    run_window_topoff(&writer_peer_state, &writer_network_state, &mut framed_writer).await
                 }
-
-                // Top off pipelining window up to 25 requests
-                let inflight_count = writer_network_state.inflight_messages.load(SeqCst);
-                if inflight_count < 25 && !is_choked {
-                    let available_window = (25 - inflight_count) as usize;
-                    let total_items = writer_network_state.active_requests.read().await.len();
-
-                    if total_items > 0 && available_window > 0 {
-                        let target_index = {
-                            let mut rng = rand::thread_rng();
-                            rng.gen_range(0..total_items)
-                        };
-
-                        let guard = writer_network_state.active_requests.read().await;
-                        if let Some((_, value)) = guard.iter().nth(target_index) {
-                            let c = value.clone();
-                            drop(guard);
-
-                            let req_pieces = c.request_block(available_window as u32).await;
-                            if !req_pieces.is_empty() {
-                                for p in req_pieces {
-                                    let msg = PeerMessage::Request {
-                                        piece_index: c.index,
-                                        block_offset: p.0,
-                                        length: p.1,
-                                    };
-
-                                    if framed_writer.send(msg).await.is_ok() {
-                                        writer_network_state.inflight_messages.fetch_add(1, SeqCst);
-                                        made_progress = true;
-                                    } else {
-                                        log::error!("FSM: Could not send new block request.");
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    }
+                Wake::Tick => {
+                    run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await
                 }
+            };
 
-                if !made_progress {
-                    break;
-                }
+            if !ok {
+                return;
             }
-
-            //We continue past the outer loop
-            //Either when we get the notification of some state change
-            //or every 2 seconds
-            tokio::select! {
-                _ = notification => {},
-                _ = request_ticker.tick() => {},
-            }
-
-            notification = writer_network_state.state_update.notified();
         }
     });
 
@@ -211,7 +293,7 @@ pub async fn state_machine(
                             reader_manager_handler.update_bitfield(peer_id.clone(), piece_index).await;
                         }
                         PeerMessage::Bitfield { bitfield } => {
-                            log::info!("Got bitfiled form peer!");
+                            log::debug!("Got bitfiled form peer!");
                             reader_manager_handler.add_bitfield(peer_id.clone(), bitfield).await;
                             let has_useful = reader_manager_handler.has_useful_pieces(peer_id.clone()).await;{
                                 let mut state_guard = reader_peer_state.write().await;
@@ -224,7 +306,7 @@ pub async fn state_machine(
                             //TODO
                         },
                         PeerMessage::Piece { piece_index, block_offset, data } => {
-                            log::info!("Received a block for piece {}", piece_index);
+                            log::debug!("Received a block for piece {}", piece_index);
                             reader_network_state.inflight_messages.fetch_sub(1, SeqCst);
                             
                             let piece_manager = {
@@ -236,12 +318,16 @@ pub async fn state_machine(
                                 let hash_matched = mgr.block_recvied(block_offset as usize, data).await;
                                 if hash_matched{
                                     reader_manager_handler.piece_finish(peer_id.clone(), piece_index).await;
+                                    // A piece finished - that's a real state change (frees an active-piece
+                                    // slot), so it warrants a full pass to pick up a new piece promptly.
+                                    reader_network_state.state_update.notify_one();
+                                } else {
+                                    // Just one block acked - only the request window needs topping off.
+                                    reader_network_state.block_acked.notify_one();
                                 }
                             } else {
                                 log::warn!("Received block for untracked piece index: {}", piece_index);
                             }
-                            
-                            reader_network_state.state_update.notify_one();
                         }
                        
                         _ => {

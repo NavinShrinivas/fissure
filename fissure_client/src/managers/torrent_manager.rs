@@ -35,13 +35,15 @@ impl TorrentManagerActor{
     fn new(torrent: Arc<ClientTorrentMetaInfo>, recv: mpsc::Receiver<TorrentManagerMessage>, download_path: String) -> Self{
         let num_of_p = torrent.clone().raw_torrent.get_number_of_pieces();
         let files = torrent.clone().files.clone();
+        let std_piece_len = torrent.clone().raw_torrent.get_standard_piece_len();
+        let total_size = torrent.clone().raw_torrent.download_size() as f64 / 1000000 as f64;
         Self{
             pieces_frequency: vec![0;num_of_p],
             rarity_bucket: vec![HashSet::new();256], //we arent ideally bothered by pieces held by more than 256 peers.
             stats: TorrentStats{
                 downloaded: "0".to_string(), 
                 uploaded: "0".to_string(), 
-                left: "0".to_string(), 
+                left: total_size.to_string(), 
             },
             client_torrent_meta: torrent, 
             peer_bitfields: HashMap::new(), 
@@ -49,7 +51,7 @@ impl TorrentManagerActor{
             peer_active_work: HashMap::new(),
             piece_concurrency_counts : (0..num_of_p).map(|i| (i, 0)).collect(),
             active_pieces_manager: HashMap::new(),
-            disk_manager: DiskManager::new(download_path, files),
+            disk_manager: DiskManager::new(download_path, files, std_piece_len),
             recv
         }
     }
@@ -210,7 +212,7 @@ impl TorrentManagerActor{
                         }
                     }
                     reply.send(Some(piece_manager));
-                    log::info!("Sent over a piece request to peer");
+                    log::debug!("Sent over a piece request to peer");
 
 
                 },
@@ -249,11 +251,12 @@ impl TorrentManagerActor{
                     }
 
                     let last_manager_copy = self.active_pieces_manager.remove(&index);
-                    if let Some(manager) = last_manager_copy {
-                        tokio::task::spawn_blocking(move || {
-                            // manager.flush_to_disk();
-                            log::info!("RECIVED A FULL PIECE - TODO FLUSH TO DISK!!!!");
-                        });
+                    if let Some(last_piece_manager) = last_manager_copy {
+                        log::debug!("starting persist of piece to disk");
+                        let current_piece_len = last_piece_manager.clone().piece_length;
+                        self.disk_manager.flush_piece_to_disk(last_piece_manager).await;
+                        self.stats.downloaded = (self.stats.downloaded.parse::<f64>().unwrap() +  current_piece_len as f64 /1000000 as f64).to_string();
+                        log::info!("Stats : {:?}", self.stats);
                     } 
                     //TODO = Trigger a flush of piece to disk by sending over the peice manager that is currently storing the piece in mem
                     //we should use the amove last_manager_copy to make it happen

@@ -121,6 +121,10 @@ impl MetaInfo {
             piece_len
         }
     }
+
+    pub fn get_standard_piece_len(&self) -> u64{ 
+        return self.info.piece_length;
+    }
 }
 //==================================================
 
