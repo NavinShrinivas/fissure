@@ -68,7 +68,7 @@ async fn main() {
         vec!["client".to_string(), "default_download_path".to_string()],
          "./".to_string());
     let _ = client
-        .add_torrent("../test_torrent_files/test.torrent".to_string(), download_path)
+        .add_torrent("../test_torrent_files/happyness.torrent".to_string(), download_path)
         .await;
 
     info!("Torrent request queued. Waiting for shutdown signal...");

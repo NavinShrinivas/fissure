@@ -47,7 +47,7 @@ impl DiskManagerActor{
                 }
             };
             handles.push((byte_offset, handle));
-            byte_offset +=  file.size * 1000000 ;
+            byte_offset +=  file.size;
         };
         Ok(DiskManagerActor{
             recv, 
@@ -64,11 +64,11 @@ impl DiskManagerActor{
                     let end_byte_offset = start_byte_offset + piece_manager.piece_length;
                     let mut bytes_pending = end_byte_offset - start_byte_offset;
                     for (idx, (file_start_offset, file_handle)) in self.handles.iter_mut().enumerate(){
-                        let file_end_offset = *file_start_offset + self.files.get(idx).unwrap().size * 1000000;
+                        let file_end_offset = *file_start_offset + self.files.get(idx).unwrap().size;
                         if bytes_pending == 0{
                             break;
                         }
-                        if start_byte_offset > *file_start_offset{
+                        if start_byte_offset >= file_end_offset{
                             continue;
                         }
                         if end_byte_offset <= *file_start_offset{
@@ -78,12 +78,13 @@ impl DiskManagerActor{
                         if start_byte_offset < *file_start_offset{
                             write_offset = 0
                         }else{
-                            write_offset = *file_start_offset - start_byte_offset;
+                            write_offset = start_byte_offset - *file_start_offset;
                         }
+                        let bytes_remaining_in_file = file_end_offset - (*file_start_offset + write_offset);
                         let mut max_bytes_in_this_file = 0;
 
-                        if bytes_pending > file_end_offset - write_offset{
-                            max_bytes_in_this_file = file_end_offset - write_offset;
+                        if bytes_pending > bytes_remaining_in_file{
+                            max_bytes_in_this_file = bytes_remaining_in_file;
                         }else{
                             max_bytes_in_this_file = bytes_pending;
                         }

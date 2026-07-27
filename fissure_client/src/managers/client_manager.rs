@@ -135,7 +135,7 @@ impl ClientManager{
 #[derive(Clone, Debug)]
 pub struct LocalFile {
     pub path: PathBuf,
-    pub size: u64, //in megabytes
+    pub size: u64, //in bytes
 }
 
 /**
@@ -146,7 +146,7 @@ pub struct LocalFile {
  */
 #[derive(Clone, Debug)]
 pub struct ClientTorrentMetaInfo {
-    // All file sizes in this struct are in bytes, file sizes in LocalFile are in mb
+    // All file sizes in this struct, including LocalFile, are in bytes
     pub raw_torrent: MetaInfo,
     pub files: Vec<LocalFile>,
     //The ordering of the files is criticl as the torrent just
@@ -162,7 +162,7 @@ impl ClientTorrentMetaInfo {
             let path_buf: PathBuf = content.path.iter().collect();
             client_files.push(LocalFile {
                 path: path_buf,
-                size: content.length / 1000000, //in megabytes
+                size: content.length,
             });
         }
 
