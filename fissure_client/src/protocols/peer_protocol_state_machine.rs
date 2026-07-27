@@ -43,47 +43,42 @@ async fn top_off_inflight_window(
     }
     let available_window = (MAX_INFLIGHT - inflight_count) as usize;
 
-    let total_items = network_state.active_requests.read().await.len();
-    if total_items == 0 {
-        return Some(false);
-    }
-
-    let target_index = {
-        let mut rng = rand::thread_rng();
-        rng.gen_range(0..total_items)
-    };
-
-    let picked = {
+    let mut candidates: Vec<Arc<PieceRequestManager>> = {
         let guard = network_state.active_requests.read().await;
-        guard.iter().nth(target_index).map(|(_, v)| v.clone())
+        guard.values().cloned().collect()
     };
-
-    let Some(c) = picked else {
-        return Some(false);
-    };
-
-    let req_pieces = c.request_block(available_window as u32).await;
-    if req_pieces.is_empty() {
+    if candidates.is_empty() {
         return Some(false);
     }
+    candidates.shuffle(&mut rand::thread_rng());
 
-    let mut made_progress = false;
-    for p in req_pieces {
-        let msg = PeerMessage::Request {
-            piece_index: c.index,
-            block_offset: p.0,
-            length: p.1,
-        };
-
-        if framed_writer.send(msg).await.is_ok() {
-            network_state.inflight_messages.fetch_add(1, SeqCst);
-            made_progress = true;
-        } else {
-            log::error!("FSM: Could not send new block request.");
-            return None;
+    // Try each active piece in turn - a piece with no requestable blocks left
+    // (nearly complete, all remaining blocks already in flight) must not stop
+    // us from topping off the window from a different active piece.
+    for c in candidates {
+        let req_pieces = c.request_block(available_window as u32).await;
+        if req_pieces.is_empty() {
+            continue;
         }
+
+        for p in req_pieces {
+            let msg = PeerMessage::Request {
+                piece_index: c.index,
+                block_offset: p.0,
+                length: p.1,
+            };
+
+            if framed_writer.send(msg).await.is_ok() {
+                network_state.inflight_messages.fetch_add(1, SeqCst);
+            } else {
+                log::error!("FSM: Could not send new block request.");
+                return None;
+            }
+        }
+        return Some(true);
     }
-    Some(made_progress)
+
+    Some(false)
 }
 
 /// Lightweight path for a block-ack wakeup: only top off the request window.
@@ -214,8 +209,8 @@ pub async fn state_machine(
         let mut framed_writer = Framed::new(writer, PeerCodec::new());
 
         let mut request_ticker = tokio::time::interval(std::time::Duration::from_secs(2));
-        let mut state_notified = writer_network_state.state_update.notified();
-        let mut block_notified = writer_network_state.block_acked.notified();
+        let state_notified = writer_network_state.state_update.notified();
+        let block_notified = writer_network_state.block_acked.notified();
         tokio::pin!(state_notified);
         tokio::pin!(block_notified);
         
@@ -301,7 +296,7 @@ pub async fn state_machine(
                             }
                             reader_network_state.state_update.notify_one();
                         }
-                        PeerMessage::Request { piece_index, block_offset, length } => {
+                        PeerMessage::Request { piece_index: _, block_offset: _, length: _ } => {
                             info!("Recived request for piece, currently not implemented. Ignoring.");
                             //TODO
                         },
@@ -318,6 +313,11 @@ pub async fn state_machine(
                                 let hash_matched = mgr.block_recvied(block_offset as usize, data).await;
                                 if hash_matched{
                                     reader_manager_handler.piece_finish(peer_id.clone(), piece_index).await;
+                                    // Free the active-piece slot immediately - don't wait for the
+                                    // periodic watchdog to notice, or the peer will stall believing
+                                    // it's still maxed out on MAX_ACTIVE_PIECES.
+                                    reader_network_state.active_requests.write().await.remove(&piece_index);
+                                    reader_network_state.pending_active_request_count.fetch_sub(1, SeqCst);
                                     // A piece finished - that's a real state change (frees an active-piece
                                     // slot), so it warrants a full pass to pick up a new piece promptly.
                                     reader_network_state.state_update.notify_one();

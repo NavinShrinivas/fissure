@@ -4,7 +4,7 @@ use crate::models::torrent_meta::MetaInfo;
 use crate::{helper, settingYaml};
 
 use crate::orchestration::{handshake_orechestration, torrent_refresh};
-use crate::protocols::tracker::{Peer, TrackerResponse};
+use crate::protocols::tracker::TrackerResponse;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
@@ -71,7 +71,7 @@ impl ClientActor {
     async fn run(mut self) {
         while let Some(msg) = self.recv.recv().await{
             match msg{
-                ClientActorMessage::AddTorret { torrent_file_path, peer_settings, download_path } => {
+                ClientActorMessage::AddTorret { torrent_file_path, peer_settings: _, download_path } => {
                     //First create manager 
                     let ctmi = ClientTorrentMetaInfo::from_torrent_file_path(torrent_file_path);
                     let manager : TorrentManager = TorrentManager::new(ctmi, download_path);

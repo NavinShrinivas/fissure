@@ -1,9 +1,8 @@
-use tokio::sync::RwLock;
 
 use crate::protocols::tracker::TrackerResponse;
 use crate::{managers::torrent_manager::TorrentManager, protocols::peer_handshake::PeerConnection};
 use crate::protocols::peer_protocol_state_machine;
-use log::{debug, error, info};
+use log::{debug, error};
 use std::{time::Duration};
 use tokio::time::sleep;
 

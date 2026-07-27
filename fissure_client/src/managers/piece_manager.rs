@@ -1,6 +1,6 @@
-use std::{collections::{HashMap, HashSet}, hash::Hash, ops::Not, ptr::read_volatile, time::Instant};
+use std::{collections::HashMap, hash::Hash, time::Instant};
 
-use bitvec::{prelude::*, ptr::hash};
+use bitvec::prelude::*;
 use sha1::{Digest, Sha1};
 use tokio::sync::{mpsc, oneshot};
 
@@ -73,26 +73,17 @@ impl PieceRequestManagerActor{
                                     log::debug!("PieceManager : Request for block request coming in");
                                     let mut requests_block_index = Vec::new();
                                     
-                                    let not_in_flight = !self.blocks_in_flight.clone();
-                                    let not_downloaded = !self.downloaded_blocks.clone();
-                                    let mask = self.required_blocks.clone() & not_in_flight & not_downloaded;
-                                    
-                                    log::debug!("required mask : {:?}", mask);
-                                    
-                                    for idx in mask.iter_ones() {
+                                    for idx in 0..self.required_blocks.len() {
                                         if requests_block_index.len() >= number_of_blocks as usize {
                                             break;
                                         }
-                                        
-                                        let block_size = if idx == self.required_blocks.len() - 1 {
-                                            self.last_piece_size
-                                        } else {
-                                            16384
-                                        };
-                                        
-                                        requests_block_index.push((Self::convert_block_index_to_offset(idx), block_size));
-                                        self.blocks_in_flight.set(idx, true);
-                                        self.in_flight_timers.insert(idx as u64, Instant::now());
+                                        // Read the bitset state in-place directly
+                                        if self.required_blocks[idx] && !self.blocks_in_flight[idx] && !self.downloaded_blocks[idx] {
+                                            let block_size = if idx == self.required_blocks.len() - 1 { self.last_piece_size } else { 16384 };
+                                            requests_block_index.push((Self::convert_block_index_to_offset(idx), block_size));
+                                            self.blocks_in_flight.set(idx, true);
+                                            self.in_flight_timers.insert(idx as u64, Instant::now());
+                                        }
                                     }
                                     
                                     log::debug!("{:?}", requests_block_index);
@@ -161,6 +152,7 @@ impl PieceRequestManagerActor{
                         },
                         None => {
                             log::debug!("Piece manager for piece has been dropped");
+                            break;
                         }
                     }
                 },

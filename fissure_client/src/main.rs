@@ -9,7 +9,7 @@ mod managers;
 //External crates :
 use clap::Parser;
 use env_logger::{Builder, Target};
-use log::{error, info, LevelFilter};
+use log::{info, LevelFilter};
 use std::collections::HashMap;
 
 use crate::managers::client_manager::ClientManager;
@@ -26,6 +26,7 @@ pub struct ClientEnv {
 
 #[tokio::main]
 async fn main() {
+    //console_subscriber::init();
     static LOCAL_CLIENT_ENV: once_cell::sync::Lazy<ClientEnv> =
         once_cell::sync::Lazy::new(|| ClientEnv::parse());
 
@@ -57,7 +58,7 @@ async fn main() {
             _ => LevelFilter::Info,
         },
     );
-    log_builder.init();
+    log_builder.try_init();
 
 
     info!("Hello, world. Starting fissure - A CLI torrent client!");

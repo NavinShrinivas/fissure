@@ -7,7 +7,6 @@ use byte_unit::{self, UnitType};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use urlencoding;
 // If I'd have to match to a different name
 // #[serde(rename = "piece length")]
 

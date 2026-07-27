@@ -225,7 +225,7 @@ impl TorrentManagerActor{
                     self.peer_bitfields.get_mut(&peer_id).unwrap().set(index, true);
 
                 },
-                PieceFinish{ peer_id, index}=>{
+                PieceFinish{ peer_id: _, index}=>{
                     //we should set the local_bitfield that we have the piece, and we shold trigger a update_Freq_have with the current piece id
                     if self.local_bitfield.get(index).unwrap() == true{
                         //We have already gotten this news from some other peer
