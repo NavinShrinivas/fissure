@@ -1,2 +1,11 @@
-logging:
-  level: "DEBUG"
+client:
+  log_level: "INFO"
+  port: "8080"
+  ip: "0.0.0.0"
+  version: "0001"
+  peer_config:
+    per_peer_inflight_count: 25
+    per_peer_active_request_count: 5
+    per_piece_active_peer_count: 5
+    block_request_timeout: 4
+    piece_request_timeout: 30

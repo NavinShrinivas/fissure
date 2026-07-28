@@ -7,7 +7,6 @@ use byte_unit::{self, UnitType};
 use log::info;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use urlencoding;
 // If I'd have to match to a different name
 // #[serde(rename = "piece length")]
 
@@ -31,16 +30,24 @@ pub struct Info {
     pub length: Option<u64>, // Exists only for single file downloads, tells length of file
     #[serde(skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<FileInfo>>, // Exists only if multi file downloads
+    //The ordering of the files is criticl as the torrent just
+    //considers it as one big contigous stream of bites
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MetaInfo {
     pub announce: String, // Contains the url for the tracker
+    #[serde(rename = "announce-list")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub announce_list: Option<Vec<Vec<String>>>, //Is the the way multi-tracker torrents are shared, this field get priority over the old one
     pub info: Info,
 }
 
 impl MetaInfo {
     pub fn files(&self) -> Vec<FileInfo> {
+        //We wont have both length and files at the same time
+        //length for single file torrents
+        //files for multi file torrents
         let files = if self.info.length.is_some() {
             vec![FileInfo {
                 length: self.info.length.unwrap(),
@@ -69,6 +76,11 @@ impl MetaInfo {
             );
         }
     }
+    /**
+     * This function works for multi-files and single file 
+     * torrent as we are summing up file sizes and not
+     * depending on info from the torrent file
+     */
     pub fn download_size(&self) -> u64 {
         let mut tot_size: u64 = 0;
         for i in self.files() {
@@ -76,68 +88,47 @@ impl MetaInfo {
         }
         return tot_size;
     }
+    pub fn get_piece_hash(&self, index: usize) -> &[u8] {
+        let start_index = index * 20;
+        let end_index = start_index + 20;
+        
+        &self.info.pieces_hash[start_index..end_index]
+    }
+    pub fn get_number_of_pieces(&self) -> usize{
+        let total_size = self.download_size();
+        let piece_len = self.info.piece_length;
+        ((total_size + piece_len - 1) / piece_len) as usize //ciel to include the non full piece
+    }
+    pub fn get_piece_length(&self, index: usize) -> u64 {
+        let total_size = self.download_size();
+        let piece_len = self.info.piece_length;
+        let num_pieces = self.get_number_of_pieces();
+
+        // Safety check: ensure index is within valid range
+        if index >= num_pieces {
+            return 0; 
+        }
+
+        // Check if this is the last piece
+        if index == num_pieces - 1 {
+            let remainder = total_size % piece_len;
+            // If remainder is 0, the last piece is a full-sized piece
+            if remainder == 0 {
+                piece_len
+            } else {
+                remainder
+            }
+        } else {
+            // All other pieces are the standard piece length
+            piece_len
+        }
+    }
+
+    pub fn get_standard_piece_len(&self) -> u64{ 
+        return self.info.piece_length;
+    }
 }
 //==================================================
 
-//===================tracker comms==================
-/*
-  #[serde(alias = "name")]
-    Deserialize this field from the given name or from its Rust name. May be repeated to specify multiple possible names for the same field.
-*/
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
-pub struct Peer {
-    #[serde(alias = "peer id", alias = "peer_id")]
-    pub peer_id: Option<String>,
-    pub ip: String, //Can be ipv4, ipv6 or domain name. need to parse that later.
-    pub port: i32,
-}
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TrackerResponse {
-    #[serde(alias = "failure reason", alias = "failure_reason")]
-    pub failure_reason: Option<String>,
-    pub interval: Option<i64>,
-    pub peers: Option<Vec<Peer>>,
-}
 
-pub struct TrackerRequest {
-    // We can form querystring from either binary or string.
-    pub info_hash: [u8; 20],
-    pub peer_id: String,
-    pub port: String,
-    pub uploaded: String,   //Base10 ASCII
-    pub downloaded: String, //Base10 ASCII
-    pub left: String,       //Base10 ASCII
-}
-impl TrackerRequest {
-    pub fn generate_query_string(&self) -> String {
-        let mut t_string: String;
-        t_string = format!(
-            "info_hash={}",
-            urlencoding::encode_binary(self.info_hash.as_slice())
-        );
-
-        t_string = format!(
-            "{}&peer_id={}",
-            t_string,
-            urlencoding::encode(&self.peer_id)
-        );
-
-        t_string = format!("{}&port={}", t_string, urlencoding::encode(&self.port));
-        t_string = format!(
-            "{}&uploaded={}",
-            t_string,
-            urlencoding::encode(&self.uploaded)
-        );
-
-        t_string = format!(
-            "{}&downloaded={}",
-            t_string,
-            urlencoding::encode(&self.downloaded)
-        );
-
-        t_string = format!("{}&left={}", t_string, urlencoding::encode(&self.left));
-
-        return t_string;
-    }
-}
 //==================================================

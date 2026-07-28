@@ -1,156 +1,144 @@
-use crate::models::client_meta::ClientTorrentMetaInfo;
-use crate::models::torrent_meta::Peer;
-use crate::models::torrent_meta::TrackerResponse;
+use crate::managers::torrent_manager::TorrentManager;
+use crate::protocols::tracker::{Peer, TrackerResponse};
 use crate::protocols;
-use crossbeam_channel;
-use log::{debug, error, info};
-use std::sync::Arc;
-use std::{thread, time};
+use log::debug;
 use tokio::sync::RwLock;
+use tokio::time::sleep;
+use std::sync::Arc;
+use std::time;
 
 pub async fn torrent_refresh(
-    client_torrent_meta_info: Arc<RwLock<ClientTorrentMetaInfo>>,
-    peer_id: &str,
-    port: &str,
-    peer_sender: crossbeam_channel::Sender<TrackerResponse>,
+    torrent_manager: TorrentManager,
+    peer_id: String,
+    port: String,
+    peer_sender: tokio::sync::mpsc::Sender<TrackerResponse>,
 ) {
-    // We only ship new peers from this for handshake
-    // Clone needed :
-    let mut old_tracker_response: Option<TrackerResponse> = None;
+    log::info!("Starting torrent tracker refresh thread.");
+    let c = torrent_manager.clone();
+    let accounce_list = c.meta.raw_torrent.announce_list.clone();
+    if accounce_list.is_some(){
+        log::info!("Using newer announce-list logic");
+        let already_seen_peers : Arc<RwLock<Vec<Peer>>> = Arc::new(RwLock::new(Vec::new()));
+        let list = accounce_list.clone().unwrap();
+        //For each tier we need to spawn a retry loop
+        for tier in list {
+            let clone_manager= torrent_manager.clone();
+            let peer_id_clone = peer_id.clone();
+            let port_clone = port.clone();
+            let seen_vec = already_seen_peers.clone();
+            let sender_clone = peer_sender.clone();
+            let mut tier_clone = tier.clone();
+            tokio::spawn(async move{
+                loop{
+                    let mut interval = 0;
+                    let mut tier_retry = 0; //backoff retry for each tier
+                    for idx in 0..tier_clone.len() {
+                        let url = tier[idx].clone();
+                        let inner_clone = clone_manager.clone();
+                        let inner_peer_id = peer_id_clone.clone();
+                        let inner_port = port_clone.clone();
+                        let inner_sender = sender_clone.clone();
 
-    loop {
-        let tracker_response = protocols::tracker::refresh_peer_list_from_tracker(
-            &client_torrent_meta_info,
-            peer_id.to_string(),
-            port.to_string(),
-        )
-        .await;
+                        let tracker_res;
 
-        //Lets skip writing old peers to client_state, as only one thread calculates peers delta
-        //and that is this thread, no need to put it in a common state and cause blocking
-        // let mut cs = client_state.read().await;
-        // println!("OIIIII");
-        // let client_torrent_meta: &mut ClientTorrentMeta = match cs.torrents.get_mut(working_torrent)
-        // {
-        //     Some(ctm) => ctm,
-        //     None => {
-        //         panic!("Wrong torrent index being fed into orchestrators...");
-        //     }
-        // };
-        // if client_torrent_meta.tracker_response.is_none() {
-        //     // println!("{:?}", tracker_response);
-        //     client_torrent_meta.tracker_response = Some(match tracker_response {
-        //         Ok(value) => value,
-        //         Err(e) => {
-        //             println!("{:?}", e.to_string());
-        //             return;
-        //         }
-        //     });
-        //     let _ = peer_sender.send(match client_torrent_meta.tracker_response.clone() {
-        //         Some(tracker_response) => tracker_response,
-        //         None => {
-        //             println!("Tracker did not return back any response...");
-        //             return;
-        //         }
-        //     });
-        if old_tracker_response.is_none() {
-            old_tracker_response = match tracker_response {
-                Ok(resp) => Some(resp),
-                Err(e) => {
-                    panic!("Error reading tracker responses to calculate delta : {}", e);
-                }
-            };
-            let _ = peer_sender.send(match old_tracker_response.clone() {
-                Some(tracker_response) => {
-                    let new_peers_len = tracker_response.peers.as_ref().unwrap().len();
-                    info!("First call to tracker, got {} new peers.", new_peers_len);
-                    tracker_response
-                }
-                None => {
-                    debug!("Tracker did not return back any response...");
-                    return;
+                        if url.starts_with("https") || url.starts_with("http"){
+                            tracker_res = protocols::tracker::refresh_peer_list_from_http_trackers(
+                                inner_clone, url.clone(), inner_peer_id, inner_port).await;
+                        }else{
+                            tracker_res = protocols::tracker::refresh_peer_list_from_udp_tracker(
+                                inner_clone, url.clone(), inner_peer_id, inner_port, tier_retry).await;
+                            log::debug!("respohse parsed : {:?}", tracker_res);
+                        }
+
+
+                        let mut new_resp = match tracker_res{
+                            Ok(k) => k,
+                            Err(_) => {
+                                //log::error!("Error making call to tracker : {}", e);
+                                tier_retry += 1;
+                                continue;
+                            }
+                        };
+                        let mut new_resp_peer = new_resp.peers.unwrap();
+                        let read_guard = seen_vec.read().await;
+
+                        new_resp_peer.retain(|f| read_guard.iter().any(|o| o.ip == f.ip) == false);
+
+                        drop(read_guard);
+
+                        let mut write_guard = seen_vec.write().await;
+                        write_guard.extend(new_resp_peer.clone());
+
+                        interval = new_resp.interval.unwrap();
+                        new_resp.peers = Some(new_resp_peer);
+                        inner_sender.send(new_resp).await.unwrap();
+                        tier_clone.remove(idx);
+                        tier_clone.insert(0, url.clone());
+                        break;
+
+                    }
+                    sleep(time::Duration::from_secs(if interval != 0 {interval as u64} else {(5u32).pow(tier_retry) as u64})).await;
                 }
             });
-        } else {
-            let old_peers = match old_tracker_response.as_ref() {
-                Some(t_resp) => match t_resp.peers.clone() {
-                    Some(peers) => peers,
-                    None => {
-                        error!("Old check, Tracker returned a response, but no peers...qutting");
-                        return;
-                    }
-                },
-                None => {
-                    error!("Old check, Tracker did not return back any response...quitting");
-                    return;
-                }
-            };
-            let new_resp = match tracker_response.as_ref() {
-                Ok(t_resp) => match t_resp.peers.clone() {
-                    Some(peers) => peers,
-                    None => {
-                        info!("Tracker refresh returned a response, but no peers...qutting");
-                        return;
-                    }
-                },
-                Err(e) => {
-                    error!(
-                        "Tracker refresh did not return back any response...quitting : {}",
-                        e
-                    );
-                    return;
-                }
-            };
-
-            let mut new_peer: Vec<Peer> = Vec::new();
-            for i in new_resp.iter() {
-                if old_peers.contains(&i) == false {
-                    new_peer.push(i.clone());
-                }
-            }
-
-            old_tracker_response = Some(match tracker_response {
-                Ok(v) => v,
-                Err(e) => {
-                    error!(
-                        "Tracker refresh did not return back any response...quitting : {}",
-                        e
-                    );
-                    return;
-                }
-            });
-            if new_peer.is_empty() {
-                info!("Tracker refresh returned no new peer.")
-            } else {
-                info!("Tracker refresh returned {} new peer", new_peer.len());
-                let _ = peer_sender.send(TrackerResponse {
-                    failure_reason: None,
-                    interval: None,
-                    peers: Some(new_peer),
-                });
-            }
         }
 
-        let secs = match old_tracker_response {
-            Some(ref internal) => {
-                match internal.interval {
-                    Some(interval) => interval,
-                    None => {
-                        info!("Tracker did not send back any interval time...defaulting to 900 seconds.");
-                        900
+    }else{
+        let mut old_tracker_response: Option<TrackerResponse> = None;
+        log::info!("Using legacy accounce url field for tracker. Only single tracker.");
+        let url = &torrent_manager.clone().meta.raw_torrent.announce;
+        loop {
+            let manager_handle = torrent_manager.clone();
+            
+            let tracker_result = protocols::tracker::refresh_peer_list_from_http_trackers(
+                manager_handle,
+                url.clone(),
+                peer_id.clone(),
+                port.clone(),
+            ).await;
+
+            let new_resp = match tracker_result {
+                Ok(resp) => resp,
+                Err(_) => {
+                    //error!("Tracker call failed: {}. Retrying...", e);
+                    sleep(time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+
+            let new_peers = match new_resp.peers.as_ref() {
+                Some(p) => p,
+                None => {
+                    debug!("Tracker returned no peers. Retrying...");
+                    sleep(time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            };
+
+            if let Some(old_resp) = &old_tracker_response {
+                if let Some(old_peers) = &old_resp.peers {
+                    let new_only: Vec<Peer> = new_peers.iter()
+                        .filter(|p| !old_peers.contains(p))
+                        .cloned()
+                        .collect();
+
+                    if !new_only.is_empty() {
+                        let _ = peer_sender.send(TrackerResponse {
+                            peers: Some(new_only),
+                            ..new_resp.clone()
+                        }).await;
                     }
                 }
+            } else {
+                let _ = peer_sender.send(new_resp.clone()).await;
             }
-            None => {
-                error!("Tracker did not return back any response...quitting");
-                return;
-            }
-        };
-        info!(
-            "Sleeping for  : {} seconds before next tracker refresh",
-            secs
-        );
-        // before sleeping, we need to deref all...scary
-        thread::sleep(time::Duration::from_secs(secs as u64));
+
+            old_tracker_response = Some(new_resp);
+            let interval = old_tracker_response.as_ref()
+                .and_then(|r| r.interval)
+                .unwrap_or(900);
+
+            log::info!("Tracker refresh sleeping for : {} seconds before next refresh.", interval);
+            sleep(time::Duration::from_secs(interval as u64)).await;
+        }
     }
 }

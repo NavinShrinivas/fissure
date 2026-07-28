@@ -3,13 +3,18 @@ mod helper;
 mod models;
 mod orchestration;
 mod protocols;
+#[allow(non_snake_case)]
 mod settingYaml;
+mod managers;
 
 //External crates :
 use clap::Parser;
 use env_logger::{Builder, Target};
-use log::{error, info, LevelFilter};
+use log::{info, LevelFilter};
 use std::collections::HashMap;
+
+use crate::managers::client_manager::ClientManager;
+
 
 #[derive(Parser, Debug)]
 #[command(name = "fissure")]
@@ -18,10 +23,13 @@ use std::collections::HashMap;
 pub struct ClientEnv {
     #[arg(long, default_value = "settings.yaml")]
     settings_yaml: String,
+    #[arg(long, default_value = "test.torrent")]
+    torrent_file: String,
 }
 
 #[tokio::main]
 async fn main() {
+    //console_subscriber::init();
     static LOCAL_CLIENT_ENV: once_cell::sync::Lazy<ClientEnv> =
         once_cell::sync::Lazy::new(|| ClientEnv::parse());
 
@@ -39,7 +47,7 @@ async fn main() {
     log_builder.filter_level(
         match settingYaml::settingYaml::get_inner_value(
             &YAML_SETTINGS,
-            vec!["logging".to_string(), "level".to_string()],
+            vec!["client".to_string(), "log_level".to_string()],
             "INFO".to_string(),
         )
         .as_str()
@@ -53,15 +61,22 @@ async fn main() {
             _ => LevelFilter::Info,
         },
     );
-    log_builder.init();
+    let _ = log_builder.try_init();
 
-    //=======startup sequence=========
 
     info!("Hello, world. Starting fissure - A CLI torrent client!");
 
-    let mut client = models::client_meta::Client::new_client(&YAML_SETTINGS);
-    let name = client.add_torrent_using_file_path("../test_torrent_files/test.torrent".to_string());
-    client
-        .orchestrate_download(client.torrents.get(&name).unwrap().clone())
+    let client = ClientManager::new(&YAML_SETTINGS);
+    let download_path =  settingYaml::settingYaml::get_inner_value(&YAML_SETTINGS, 
+        vec!["client".to_string(), "default_download_path".to_string()],
+         "./".to_string());
+    let _ = client
+        .add_torrent(LOCAL_CLIENT_ENV.torrent_file.clone(), download_path)
         .await;
+
+    info!("Torrent request queued. Waiting for shutdown signal...");
+    tokio::signal::ctrl_c()
+        .await
+        .expect("failed to listen for Ctrl+C");
+    info!("Shutting down fissure client");
 }

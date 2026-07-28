@@ -46,7 +46,7 @@ pub fn get_inner_value<T: serde::de::DeserializeOwned>(
                 };
             }
             None => {
-                log::error!("Error derefrencing in settings yaml, couldnt find the said key!");
+                log::error!("Error derefrencing in settings yaml, couldnt find the said key : {:?}! Continuing", deref_vec);
                 return default_value_when_anything_not_found;
             }
         }
@@ -85,6 +85,7 @@ pub fn get_inner_value<T: serde::de::DeserializeOwned>(
     return default_value_when_anything_not_found;
 }
 
+#[allow(dead_code)]
 pub fn search_for_item_in_vec_and_return_value(
     vec: &Vec<Value>,
     item: &str,
@@ -103,6 +104,7 @@ pub fn search_for_item_in_vec_and_return_value(
     None
 }
 
+#[allow(dead_code)]
 pub fn get_value_from_value(value: &Value, key: &str) -> Option<Value> {
     match value.get(key) {
         Some(v) => Some(v.clone()),
