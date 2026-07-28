@@ -11,5 +11,6 @@ pub fn generate_peer_id(client_env: &FissureClientOptions) -> String {
         .map(char::from)
         .collect();
     let id = format!("{}{}{}", id, client_env.version, rand_string);
+    log::debug!("Our peer id : {}", id);
     return id.to_string();
 }

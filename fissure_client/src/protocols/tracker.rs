@@ -3,9 +3,14 @@ use crate::managers::torrent_manager::TorrentManager;
 use log::debug;
 use reqwest;
 use serde::{Deserialize, Deserializer};
-use std::net::Ipv4Addr;
+use tokio::net::UdpSocket;
+use tokio::time::timeout;
+use url::Url;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::error::Error;
 use std::fmt;
+use std::os::macos::raw::stat;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub struct TrackerRequestErr {
@@ -25,8 +30,9 @@ impl fmt::Display for TrackerRequestErr {
 
 impl Error for TrackerRequestErr {}
 // Needs rafactor to be able to run with only ClientState and for all torrents
-pub async fn refresh_peer_list_from_tracker(
+pub async fn refresh_peer_list_from_http_trackers(
     torrent_manager: TorrentManager,
+    url: String,
     peer_id: String,
     port: String,
 ) -> Result<TrackerResponse, FissureErr> {
@@ -45,17 +51,23 @@ pub async fn refresh_peer_list_from_tracker(
         left: ((torrent_stats.left.clone().parse::<f64>().unwrap() * 1000000 as f64) as u64).to_string(),
     };
     let qs = req.generate_query_string();
-    let req_client = reqwest::Client::new();
-
-    let url_with_parameters = format!("{}?{}", torrent_manager.meta.raw_torrent.announce, qs);
+    let req_client = reqwest::Client::builder().user_agent("qBittorrent/4.5.2").build().unwrap();
+    let separator = if url.contains('?') { "&" } else { "?" };
+    let url_with_parameters = format!("{}{}{}", url, separator, qs);
+    log::info!("{:?}", url_with_parameters);
     // Needs to be debug
     debug!("Making request to tracker : {}", url_with_parameters);
 
-    let res = req_client
+    let res = match req_client
         .get(url_with_parameters)
         .send()
-        .await
-        .expect("Failed to make connection :(. Check your internet connection.");
+        .await{
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("Error makign tracker request : {:?}", e);
+                return Err(FissureErr::new(e.to_string()));
+            }
+        };
 
     // 2. FIX: Extract raw binary bytes directly instead of text
     let raw_bytes = res
@@ -65,6 +77,116 @@ pub async fn refresh_peer_list_from_tracker(
     let resp = TrackerResponse::from_raw_bytes_response_body(&raw_bytes);
     debug!("{:?}", resp);
     return resp;
+}
+
+pub async fn refresh_peer_list_from_udp_tracker(
+    torrent_manager: TorrentManager,
+    url: String, 
+    our_peer_id: String, 
+    our_port: String,
+    retry: u32,
+) -> Result<TrackerResponse, FissureErr>{
+    let sock = UdpSocket::bind("0.0.0.0:0").await?;
+    sock.connect(&extract_tracker_host_port(&url).unwrap()).await;
+    
+    //first packet : 
+    let t_id: u32 = rand::random();
+    let magic : u64 = 0x41727101980;
+    let action : u32= 0;
+    let mut first_request_buf : Vec<u8> = Vec::with_capacity(16);
+    first_request_buf.extend_from_slice(&magic.to_be_bytes());
+    first_request_buf.extend_from_slice(&action.to_be_bytes());
+    first_request_buf.extend_from_slice(&t_id.to_be_bytes());
+    sock.send(&first_request_buf).await;
+
+    let mut connect_buf = [0u8; 16];
+
+    let c_id = match timeout(Duration::from_secs(15 * (2u64.pow(retry) + 1)), sock.recv(&mut connect_buf)).await{
+        Ok(Ok(first_res)) => {
+            let res_action = u32::from_be_bytes(connect_buf[0..4].try_into().unwrap());
+            let r_t_id = u32::from_be_bytes(connect_buf[4..8].try_into().unwrap());
+            let c_id = u64::from_be_bytes(connect_buf[8..16].try_into().unwrap());
+            if res_action !=0 || r_t_id != t_id {
+                return Err(FissureErr::new("Malcious UDP tracker messing with stuff in first req".to_string()));
+            }
+            c_id
+
+        }
+        Ok(Err(err)) => {
+            return Err(FissureErr::new(err.to_string()));
+        }
+        Err(_) => {
+            return Err(FissureErr::new("Timeout for first UDP request".to_string()));
+        }
+    };
+
+    //second request ; 
+
+    let mut second_request_buf: Vec<u8> = Vec::new();
+    let action_announce: u32 = 1;
+    let event_started: u32 = 2; 
+    let key: u32 = rand::random();
+    let num_want: i32 = -1; 
+    let stats = torrent_manager.clone().get_torrent_stats().await.unwrap();
+    let t_id: u32 = rand::random();
+    second_request_buf.extend_from_slice(&c_id.to_be_bytes());
+    second_request_buf.extend_from_slice(&action_announce.to_be_bytes());
+    second_request_buf.extend_from_slice(&t_id.to_be_bytes());
+    second_request_buf.extend_from_slice(&torrent_manager.clone().meta.info_hash);
+    second_request_buf.extend_from_slice(our_peer_id.as_bytes());
+    second_request_buf.extend_from_slice(&((stats.downloaded.parse::<f64>().unwrap() * 1000000 as f64) as u64).to_be_bytes());
+    second_request_buf.extend_from_slice(&((stats.left.parse::<f64>().unwrap() * 1000000 as f64) as u64).to_be_bytes());
+    second_request_buf.extend_from_slice(&((stats.uploaded.parse::<f64>().unwrap() * 1000000 as f64) as u64).to_be_bytes());
+    second_request_buf.extend_from_slice(&event_started.to_be_bytes());
+    second_request_buf.extend_from_slice(&0u32.to_be_bytes()); // IP address (0 = default client IP)
+    second_request_buf.extend_from_slice(&key.to_be_bytes());
+    second_request_buf.extend_from_slice(&num_want.to_be_bytes());
+    second_request_buf.extend_from_slice(&our_port.parse::<u16>().unwrap().to_be_bytes());
+    log::debug!("Second request : {:?}", second_request_buf);
+    sock.send(&second_request_buf).await;
+    let mut resp_buf = [0u8; 1024]; 
+    match timeout(Duration::from_secs(15 * (2u64.pow(retry) + 1)), sock.recv(&mut resp_buf)).await{
+        Ok(Ok(size)) => {
+            if size < 20 {
+                log::info!("{}", size);
+                return Err(FissureErr::new("Invalid second response from UDP tracker".to_string()));
+            }
+            let res_action = u32::from_be_bytes(resp_buf[0..4].try_into().unwrap());
+            let res_tx_id = u32::from_be_bytes(resp_buf[4..8].try_into().unwrap());
+
+            if res_action != 1 || res_tx_id != t_id {
+                log::info!("{}{}", res_action, res_tx_id);
+                return Err(FissureErr::new("Invalid second response from UDP tracker".to_string()));
+            }
+            log::debug!("Second response : {:?}", resp_buf);
+
+            return Ok(TrackerResponse::from_udp_bytes(&resp_buf[..size]).unwrap());
+        },
+        Ok(Err(err)) => {
+            return Err(FissureErr::new(err.to_string()));
+        }
+        Err(_) => {
+            return Err(FissureErr::new("Timeout for first UDP request".to_string()));
+        }
+    }
+}
+pub fn extract_tracker_host_port(raw_url: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let parsed = Url::parse(raw_url)?;
+
+    // Extract the host (e.g. "tracker.opentrackr.org")
+    let host = parsed
+        .host_str()
+        .ok_or("Missing host in tracker URL")?;
+
+    // Extract the port, or fallback to standard default ports
+    let port = parsed.port().unwrap_or(match parsed.scheme() {
+        "http" => 80,
+        "https" => 443,
+        _ => 80, // Default UDP trackers often specify explicit ports
+    });
+
+    // Format strictly as "host:port"
+    Ok(format!("{}:{}", host, port))
 }
 
 //===================tracker comms==================
@@ -94,7 +216,6 @@ pub struct TrackerResponse {
     pub peers: Option<Vec<Peer>>,
 }
 
-// 1. Helper to safely deserialize erratic binary peer IDs into strings
 fn deserialize_peer_id<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: Deserializer<'de>,
@@ -103,7 +224,6 @@ where
     Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
 }
 
-// 2. Multi-mode tracker response peer normalizer
 fn deserialize_peers<'de, D>(deserializer: D) -> Result<Option<Vec<Peer>>, D::Error>
 where
     D: Deserializer<'de>,
@@ -153,6 +273,43 @@ impl TrackerResponse {
         }
         }
     }
+
+    pub fn from_udp_bytes(bytes: &[u8]) -> Result<Self, FissureErr> {
+        if bytes.len() < 20 {
+            return Err(FissureErr::new("Response buffer too short".into()));
+        }
+
+        let interval = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+        let _leechers = u32::from_be_bytes(bytes[12..16].try_into().unwrap());
+        let _seeders = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+
+        // Slice ONLY the peer bytes
+        let peer_bytes = &bytes[20..];
+
+        let peers: Vec<Peer> = peer_bytes
+            .chunks_exact(6)
+            .filter_map(|chunk| {
+                let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+                let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+
+                if ip.is_unspecified() || port == 0 {
+                    return None;
+                }
+
+                Some(Peer {
+                    peer_id: None,
+                    ip: ip.to_string(),
+                    port: port as i32,
+                })
+            })
+            .collect();
+
+        Ok(TrackerResponse {
+            failure_reason: None,
+            interval: Some(interval as i64),
+            peers: Some(peers),
+        })
+    }
 }
 
 pub struct TrackerRequest {
@@ -165,36 +322,27 @@ pub struct TrackerRequest {
     pub left: String,       //Base10 ASCII
 }
 impl TrackerRequest {
-    pub fn generate_query_string(&self) -> String {
-        let mut t_string: String;
-        t_string = format!(
-            "info_hash={}",
-            urlencoding::encode_binary(self.info_hash.as_slice())
-        );
+pub fn generate_query_string(&self) -> String {
+    // FORCE every single byte to be %XX format, no matter what ASCII character it represents!
+    let encoded_info_hash: String = self
+        .info_hash
+        .iter()
+        .map(|byte| format!("%{:02X}", byte))
+        .collect();
 
-        t_string = format!(
-            "{}&peer_id={}",
-            t_string,
-            urlencoding::encode(&self.peer_id)
-        );
+    let encoded_peer_id = urlencoding::encode(&self.peer_id);
 
-        t_string = format!("{}&port={}", t_string, urlencoding::encode(&self.port));
-        t_string = format!(
-            "{}&uploaded={}",
-            t_string,
-            urlencoding::encode(&self.uploaded)
-        );
+    format!(
+        "info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact=1&event=started",
+        encoded_info_hash,
+        encoded_peer_id,
+        self.port,
+        self.uploaded,
+        self.downloaded,
+        self.left
+    )
+}
 
-        t_string = format!(
-            "{}&downloaded={}",
-            t_string,
-            urlencoding::encode(&self.downloaded)
-        );
-
-        t_string = format!("{}&left={}", t_string, urlencoding::encode(&self.left));
-
-        return t_string;
-    }
 }
 
 //==================================================

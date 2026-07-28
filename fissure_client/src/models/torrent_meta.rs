@@ -37,6 +37,9 @@ pub struct Info {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MetaInfo {
     pub announce: String, // Contains the url for the tracker
+    #[serde(rename = "announce-list")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub announce_list: Option<Vec<Vec<String>>>, //Is the the way multi-tracker torrents are shared, this field get priority over the old one
     pub info: Info,
 }
 
