@@ -38,7 +38,7 @@ impl DiskManagerActor{
             .create(true)
             .open(&path).await{
                 Ok(h) => {
-                    log::info!("Creating file as part of torrent init: {:?}", path);
+                    log::debug!("Creating file as part of torrent init: {:?}", path);
                     h
                 },
                 Err(e) => {
@@ -74,20 +74,17 @@ impl DiskManagerActor{
                         if end_byte_offset <= *file_start_offset{
                             break;
                         }
-                        let mut write_offset = 0;
-                        if start_byte_offset < *file_start_offset{
-                            write_offset = 0
-                        }else{
-                            write_offset = start_byte_offset - *file_start_offset;
-                        }
+                        let write_offset = if start_byte_offset < *file_start_offset {
+                            0
+                        } else {
+                            start_byte_offset - *file_start_offset
+                        };
                         let bytes_remaining_in_file = file_end_offset - (*file_start_offset + write_offset);
-                        let mut max_bytes_in_this_file = 0;
-
-                        if bytes_pending > bytes_remaining_in_file{
-                            max_bytes_in_this_file = bytes_remaining_in_file;
-                        }else{
-                            max_bytes_in_this_file = bytes_pending;
-                        }
+                        let max_bytes_in_this_file = if bytes_pending > bytes_remaining_in_file {
+                            bytes_remaining_in_file
+                        } else {
+                            bytes_pending
+                        };
                         match file_handle.seek(std::io::SeekFrom::Start(write_offset)).await{
                             Ok(_) => {}, 
                             Err(e) => {
@@ -106,7 +103,7 @@ impl DiskManagerActor{
                         bytes_pending -= max_bytes_in_this_file;
 
                     }
-                    log::info!("Persisted piece to disk successfully.");
+                    log::debug!("Persisted piece to disk successfully.");
                 }
             }
         }
@@ -123,6 +120,7 @@ pub enum DiskManagerMessage{
 #[derive(Clone, Debug)]
 pub struct DiskManager{
     pub send: mpsc::Sender<DiskManagerMessage>,
+    #[allow(dead_code)]
     pub download_path: String
 }
 
@@ -141,7 +139,7 @@ impl DiskManager{
     }
 
     pub async fn flush_piece_to_disk(&self, piece_manager: Arc<PieceRequestManager>){
-        self.send.send(DiskManagerMessage::FlushPieceToDisk { piece_manager: piece_manager.clone() }).await;
+        let _ = self.send.send(DiskManagerMessage::FlushPieceToDisk { piece_manager: piece_manager.clone() }).await;
 
     }
 }

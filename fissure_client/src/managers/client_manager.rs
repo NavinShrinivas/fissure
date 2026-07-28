@@ -36,8 +36,8 @@ impl Default for FissureClientOptions {
 pub enum ClientActorMessage{
     AddTorret{
         torrent_file_path: String,
-        peer_settings: PeerOptions,
-        download_path: String
+        _peer_settings: PeerOptions,
+        download_path: String,
     }
 }
 
@@ -70,8 +70,9 @@ impl ClientActor {
     }
     async fn run(mut self) {
         while let Some(msg) = self.recv.recv().await{
+            #[allow(unreachable_patterns)]
             match msg{
-                ClientActorMessage::AddTorret { torrent_file_path, peer_settings: _, download_path } => {
+                ClientActorMessage::AddTorret { torrent_file_path, _peer_settings: _, download_path } => {
                     //First create manager 
                     let ctmi = ClientTorrentMetaInfo::from_torrent_file_path(torrent_file_path);
                     let manager : TorrentManager = TorrentManager::new(ctmi, download_path);
@@ -85,12 +86,17 @@ impl ClientActor {
                     let h1 = tokio::spawn(async move{
                         torrent_refresh::torrent_refresh(c1, c1_peer, c1_port, peer_tracker_tx).await;
                     });
+                    let c2 = manager.clone();
                     //spawn handshaker and pass it a torrentmanager 
                     //This handshake orechestration also spawn the FSM and provides it with all the needed details.
                     let h2 = tokio::spawn(async move{
-                        handshake_orechestration::handshake_orchestrator(peer_tracker_rx, manager.clone(), c2_peer).await;
+                        handshake_orechestration::handshake_orchestrator(peer_tracker_rx, c2, c2_peer).await;
                     });
-                    let _ = join_all(vec![h1, h2]).await;
+                    let h3 = tokio::spawn(async move{
+                        helper::timed_torrent_stats_logger(manager.clone()).await;
+                    });
+
+                    let _ = join_all(vec![h1, h2, h3]).await;
 
                 },
                 _ => {
@@ -103,6 +109,7 @@ impl ClientActor {
 }
 
 pub struct ClientManager{
+    #[allow(dead_code)]
     settings: FissureClientOptions,
     raw_settings: HashMap<String, Value>,
     send: mpsc::Sender<ClientActorMessage>,
@@ -111,7 +118,7 @@ pub struct ClientManager{
 impl ClientManager{
     pub fn new(settings: &HashMap<std::string::String, serde_yaml::Value>) -> Self{
         let (send, recv) = mpsc::channel(400);
-        log::info!("Creating new client maanger");
+        log::debug!("Creating new client maanger");
         let actor = ClientActor::new(&settings, recv);
         tokio::spawn(async move{actor.run().await});
         Self{
@@ -126,7 +133,7 @@ impl ClientManager{
             &self.raw_settings, 
             vec!["client".to_string(), "peer_settings".to_string()], 
             PeerOptions::default());
-        let _ = self.send.send(ClientActorMessage::AddTorret { torrent_file_path, peer_settings, download_path }).await;
+        let _ = self.send.send(ClientActorMessage::AddTorret { torrent_file_path, _peer_settings: peer_settings, download_path }).await;
     }
 }
 

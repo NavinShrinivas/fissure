@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash, time::Instant};
+use std::{collections::HashMap, time::Instant};
 
 use bitvec::prelude::*;
 use sha1::{Digest, Sha1};
@@ -67,6 +67,7 @@ impl PieceRequestManagerActor{
                 msg_opt = self.recv.recv() => {
                     match msg_opt {
                         Some(msg) => {
+                            #[allow(unreachable_patterns)]
                             match msg{
                                 //[TODO] => Add handlers for all other types of messages
                                BlocksToRequest { number_of_blocks, sender } => {
@@ -117,7 +118,7 @@ impl PieceRequestManagerActor{
                                         
                                         if result.as_slice() == self.hash.as_slice() {
                                             let _ = piece_done_sender.send(true);
-                                            log::info!("Piece completely verified against hash record!");
+                                            log::debug!("Piece completely verified against hash record!");
                                         } else {
                                             log::warn!("All blocks of pieces received but hash doesn't match! Resetting piece.");
                                             
@@ -169,7 +170,7 @@ impl PieceRequestManagerActor{
                     for idx in expired {
                         self.blocks_in_flight.set(idx as usize, false);
                         self.in_flight_timers.remove(&idx);
-                        log::info!("Block {} timed out", idx);
+                        log::debug!("Block {} timed out", idx);
                     }
                 }
             }
@@ -203,6 +204,7 @@ pub enum PieceRequestManagerMessage{
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PieceRequestManager{
     //Only put things in here that wont be edited, if a particular data would be edited by peers, put it in actor
     pub index: u64,
@@ -225,7 +227,7 @@ impl PieceRequestManager{
     }
     pub async fn block_recvied(&self, block_offset: usize, data: Vec<u8> ) -> bool{
         let (tx,rx) = oneshot::channel::<bool>();
-        self.send.send(PieceRequestManagerMessage::BlockRecived { block_offset, data, piece_done_sender: tx}).await;
+        let _ = self.send.send(PieceRequestManagerMessage::BlockRecived { block_offset, data, piece_done_sender: tx}).await;
         match rx.await.ok(){
             Some(v) => {v}
             None => false
@@ -234,11 +236,11 @@ impl PieceRequestManager{
 
     pub async fn request_block(&self, number_of_blocks: u32) -> Vec<(u64, u64)>{
         let (tx,rx) = oneshot::channel::<Vec<(u64, u64)>>();
-        self.send.send(PieceRequestManagerMessage::BlocksToRequest { number_of_blocks, sender: tx }).await;
+        let _ = self.send.send(PieceRequestManagerMessage::BlocksToRequest { number_of_blocks, sender: tx }).await;
         match rx.await.ok(){
             Some(v) => {v}
             None => {
-                log::info!("Empty block req");
+                log::debug!("Empty block req");
                 Vec::new()
             }
         }

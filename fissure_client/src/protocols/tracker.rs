@@ -6,29 +6,9 @@ use serde::{Deserialize, Deserializer};
 use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use url::Url;
-use std::net::{Ipv4Addr, SocketAddrV4};
-use std::error::Error;
-use std::fmt;
-use std::os::macos::raw::stat;
+use std::net::Ipv4Addr;
 use std::time::Duration;
 
-#[derive(Debug)]
-pub struct TrackerRequestErr {
-    action: String,
-    error_string: String,
-}
-
-impl fmt::Display for TrackerRequestErr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "action : {:?} reason : {:?}",
-            self.action, self.error_string
-        )
-    }
-}
-
-impl Error for TrackerRequestErr {}
 // Needs rafactor to be able to run with only ClientState and for all torrents
 pub async fn refresh_peer_list_from_http_trackers(
     torrent_manager: TorrentManager,
@@ -54,7 +34,7 @@ pub async fn refresh_peer_list_from_http_trackers(
     let req_client = reqwest::Client::builder().user_agent("qBittorrent/4.5.2").build().unwrap();
     let separator = if url.contains('?') { "&" } else { "?" };
     let url_with_parameters = format!("{}{}{}", url, separator, qs);
-    log::info!("{:?}", url_with_parameters);
+    log::debug!("{:?}", url_with_parameters);
     // Needs to be debug
     debug!("Making request to tracker : {}", url_with_parameters);
 
@@ -64,7 +44,8 @@ pub async fn refresh_peer_list_from_http_trackers(
         .await{
             Ok(r) => r,
             Err(e) => {
-                log::error!("Error makign tracker request : {:?}", e);
+                //This logs spams the console
+                //log::error!("Error makign tracker request : {:?}", e);
                 return Err(FissureErr::new(e.to_string()));
             }
         };
@@ -87,7 +68,7 @@ pub async fn refresh_peer_list_from_udp_tracker(
     retry: u32,
 ) -> Result<TrackerResponse, FissureErr>{
     let sock = UdpSocket::bind("0.0.0.0:0").await?;
-    sock.connect(&extract_tracker_host_port(&url).unwrap()).await;
+    let _= sock.connect(&extract_tracker_host_port(&url).unwrap()).await;
     
     //first packet : 
     let t_id: u32 = rand::random();
@@ -97,12 +78,12 @@ pub async fn refresh_peer_list_from_udp_tracker(
     first_request_buf.extend_from_slice(&magic.to_be_bytes());
     first_request_buf.extend_from_slice(&action.to_be_bytes());
     first_request_buf.extend_from_slice(&t_id.to_be_bytes());
-    sock.send(&first_request_buf).await;
+    let _= sock.send(&first_request_buf).await;
 
     let mut connect_buf = [0u8; 16];
 
     let c_id = match timeout(Duration::from_secs(15 * (2u64.pow(retry) + 1)), sock.recv(&mut connect_buf)).await{
-        Ok(Ok(first_res)) => {
+        Ok(Ok(_)) => {
             let res_action = u32::from_be_bytes(connect_buf[0..4].try_into().unwrap());
             let r_t_id = u32::from_be_bytes(connect_buf[4..8].try_into().unwrap());
             let c_id = u64::from_be_bytes(connect_buf[8..16].try_into().unwrap());
@@ -143,19 +124,19 @@ pub async fn refresh_peer_list_from_udp_tracker(
     second_request_buf.extend_from_slice(&num_want.to_be_bytes());
     second_request_buf.extend_from_slice(&our_port.parse::<u16>().unwrap().to_be_bytes());
     log::debug!("Second request : {:?}", second_request_buf);
-    sock.send(&second_request_buf).await;
+    _ = sock.send(&second_request_buf).await;
     let mut resp_buf = [0u8; 1024]; 
     match timeout(Duration::from_secs(15 * (2u64.pow(retry) + 1)), sock.recv(&mut resp_buf)).await{
         Ok(Ok(size)) => {
             if size < 20 {
-                log::info!("{}", size);
+                log::debug!("{}", size);
                 return Err(FissureErr::new("Invalid second response from UDP tracker".to_string()));
             }
             let res_action = u32::from_be_bytes(resp_buf[0..4].try_into().unwrap());
             let res_tx_id = u32::from_be_bytes(resp_buf[4..8].try_into().unwrap());
 
             if res_action != 1 || res_tx_id != t_id {
-                log::info!("{}{}", res_action, res_tx_id);
+                log::debug!("{}{}", res_action, res_tx_id);
                 return Err(FissureErr::new("Invalid second response from UDP tracker".to_string()));
             }
             log::debug!("Second response : {:?}", resp_buf);
@@ -208,7 +189,6 @@ pub struct Peer {
 #[derive(Deserialize, Debug, Clone)]
 pub struct TrackerResponse {
     #[serde(alias = "failure reason", alias = "failure_reason")]
-    pub failure_reason: Option<String>,
     pub interval: Option<i64>,
     
     // Automatically normalizes both compact arrays and the verbose dictionary lists
@@ -265,7 +245,7 @@ impl TrackerResponse {
         match serde_bencoded::from_bytes(raw_bytes) {
             Ok(res) => Ok(res),
             Err(e) => {
-                log::info!("{:?}", raw_bytes);
+                log::debug!("{:?}", raw_bytes);
                 Err(FissureErr::new(
                 "[ERROR] Error decoding tracker response from bencoding. res:".to_string()
                     + &e.to_string(), 
@@ -305,7 +285,6 @@ impl TrackerResponse {
             .collect();
 
         Ok(TrackerResponse {
-            failure_reason: None,
             interval: Some(interval as i64),
             peers: Some(peers),
         })

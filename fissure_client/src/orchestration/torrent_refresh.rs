@@ -1,9 +1,9 @@
 use crate::managers::torrent_manager::TorrentManager;
 use crate::protocols::tracker::{Peer, TrackerResponse};
 use crate::protocols;
-use log::{debug, error};
+use log::debug;
 use tokio::sync::RwLock;
-use tokio::time::{Sleep, sleep};
+use tokio::time::sleep;
 use std::sync::Arc;
 use std::time;
 
@@ -42,9 +42,8 @@ pub async fn torrent_refresh(
                         let tracker_res;
 
                         if url.starts_with("https") || url.starts_with("http"){
-                            // tracker_res = protocols::tracker::refresh_peer_list_from_http_trackers(
-                            //     inner_clone, url.clone(), inner_peer_id, inner_port).await;
-                            todo!();
+                            tracker_res = protocols::tracker::refresh_peer_list_from_http_trackers(
+                                inner_clone, url.clone(), inner_peer_id, inner_port).await;
                         }else{
                             tracker_res = protocols::tracker::refresh_peer_list_from_udp_tracker(
                                 inner_clone, url.clone(), inner_peer_id, inner_port, tier_retry).await;
@@ -54,8 +53,8 @@ pub async fn torrent_refresh(
 
                         let mut new_resp = match tracker_res{
                             Ok(k) => k,
-                            Err(e) => {
-                                log::error!("Error making call to tracker : {}", e);
+                            Err(_) => {
+                                //log::error!("Error making call to tracker : {}", e);
                                 tier_retry += 1;
                                 continue;
                             }
@@ -99,8 +98,8 @@ pub async fn torrent_refresh(
 
             let new_resp = match tracker_result {
                 Ok(resp) => resp,
-                Err(e) => {
-                    error!("Tracker call failed: {}. Retrying...", e);
+                Err(_) => {
+                    //error!("Tracker call failed: {}. Retrying...", e);
                     sleep(time::Duration::from_secs(5)).await;
                     continue;
                 }

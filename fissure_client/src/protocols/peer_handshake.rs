@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::managers::torrent_manager::TorrentManager;
 use crate::protocols::tracker::Peer;
 use bitvec::vec::BitVec;
-use log::{info, warn};
+use log::warn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -15,6 +15,7 @@ pub struct PeerConnection {
 }
 
 #[derive(Clone, Debug)]
+#[allow(unused)]
 pub struct PeerState{
     //Things used inside the state machine
     pub peer_id: Option<String>,
@@ -56,7 +57,7 @@ impl PeerConnection {
         torrent_manager: TorrentManager,
         peer_id: String
     ) -> Option<Self> {
-        info!("\tconnecting to {}:{}..", peer_meta.ip, peer_meta.port);
+        log::debug!("\tconnecting to {}:{}..", peer_meta.ip, peer_meta.port);
         
         let mut handshake = Vec::with_capacity(68);
         handshake.push(19u8);                                         // pstrlen
@@ -67,8 +68,9 @@ impl PeerConnection {
 
         let mut stream = match TcpStream::connect(format!("{}:{}", peer_meta.ip, peer_meta.port)).await {
             Ok(s) => s,
-            Err(e) => {
-                warn!("Failed to connect to {}:{}: {}", peer_meta.ip, peer_meta.port, e);
+            Err(_) => {
+                //there will be a lot of bad peers in a torrent network, no point in polluting the logs with it.
+                //warn!("Failed to connect to {}:{}: {}", peer_meta.ip, peer_meta.port, e);
                 return None; 
             }
         };
@@ -101,9 +103,9 @@ impl PeerConnection {
         let peer_id_bytes = &remaining_data[peer_id_start..peer_id_start + 20];
         
         let res_peer_id = String::from_utf8_lossy(peer_id_bytes).into_owned();
-        info!("Handshake completed with peer: {:?}", res_peer_id);
+        log::debug!("Handshake completed with peer: {:?}", res_peer_id);
 
-        info!("Registering with torrent manager..");
+        log::debug!("Registering with torrent manager..");
         torrent_manager.add_new_peer(BitVec::new(), res_peer_id.clone()).await;
 
         Some(PeerConnection::init_connection(

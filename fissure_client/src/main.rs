@@ -3,6 +3,7 @@ mod helper;
 mod models;
 mod orchestration;
 mod protocols;
+#[allow(non_snake_case)]
 mod settingYaml;
 mod managers;
 
@@ -22,6 +23,8 @@ use crate::managers::client_manager::ClientManager;
 pub struct ClientEnv {
     #[arg(long, default_value = "settings.yaml")]
     settings_yaml: String,
+    #[arg(long, default_value = "test.torrent")]
+    torrent_file: String,
 }
 
 #[tokio::main]
@@ -58,7 +61,7 @@ async fn main() {
             _ => LevelFilter::Info,
         },
     );
-    log_builder.try_init();
+    let _ = log_builder.try_init();
 
 
     info!("Hello, world. Starting fissure - A CLI torrent client!");
@@ -68,7 +71,7 @@ async fn main() {
         vec!["client".to_string(), "default_download_path".to_string()],
          "./".to_string());
     let _ = client
-        .add_torrent("../test_torrent_files/happyness.torrent".to_string(), download_path)
+        .add_torrent(LOCAL_CLIENT_ENV.torrent_file.clone(), download_path)
         .await;
 
     info!("Torrent request queued. Waiting for shutdown signal...");

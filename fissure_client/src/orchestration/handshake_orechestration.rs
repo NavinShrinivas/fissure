@@ -21,7 +21,7 @@ pub async fn handshake_orchestrator(
     log::info!("Starting handshake_orchestrator");
     let mut retires = 10;
     while retires > 0 {
-        log::debug!("Waiting to receive new peers from tracker...");
+        log::info!("Waiting to receive new peers from tracker...");
             let delta_tracker_response = match peers_rs.recv().await {
                 Some(resp) => {
                     log::debug!("Received new peer info from trackers : {:?}", resp);
@@ -35,7 +35,7 @@ pub async fn handshake_orchestrator(
                         continue;
                     }
             };
-        log::debug!("handshake_orchestrator: after recv await");
+        log::info!("handshake_orchestrator: after recv await");
 
         let new_peer_list = match delta_tracker_response.peers {
             Some(x) => x,

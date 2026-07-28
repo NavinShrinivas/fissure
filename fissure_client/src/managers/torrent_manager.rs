@@ -4,7 +4,7 @@ use bitvec::prelude::*;
 use tokio::{sync::{mpsc, oneshot}};
 use std::sync::Arc;
 
-use crate::managers::{client_manager::ClientTorrentMetaInfo, disk_manager::DiskManager, piece_manager::PieceRequestManager, torrent_manager::TorrentManagerMessage::{AddBitFeild, GetTorrentStats, HasUsefulPieces, PieceFinish, RequestWork, UpdateAndGetActiveRequestCount, UpdateBitField}};
+use crate::managers::{client_manager::ClientTorrentMetaInfo, disk_manager::DiskManager, piece_manager::PieceRequestManager, torrent_manager::TorrentManagerMessage::{AddBitFeild, GetActivePeers, GetTorrentStats, HasUsefulPieces, PieceFinish, RequestWork, UpdateAndGetActiveRequestCount, UpdateBitField}};
 
 
 #[derive(Clone, Debug)]
@@ -112,7 +112,7 @@ impl TorrentManagerActor{
                 },
                 //TODO: Unused rn now, but im sure we need this.
                 GetTorrentStats{ send } => {
-                    send.send(self.stats.clone());
+                    let _ = send.send(self.stats.clone());
                 },
                 RequestWork{peer_id, reply} => {
                     //THIS BRANCH IS THE BRAINS FOR PIECE SELECTION ALGORITHM
@@ -124,7 +124,7 @@ impl TorrentManagerActor{
                         },
                         None => {
                             log::warn!("Peer bitfield doesnt exist for peer: {}, cannot assign pieces rn.", peer_id);
-                            reply.send(None);
+                            let _ = reply.send(None);
                             continue;
                         }
                     };
@@ -211,7 +211,7 @@ impl TorrentManagerActor{
                             panic!("We are trying to assign work to peer whom we arent tracking in the manager. But the peer is active as we have gotten a request from for pieces");
                         }
                     }
-                    reply.send(Some(piece_manager));
+                    let _ = reply.send(Some(piece_manager));
                     log::debug!("Sent over a piece request to peer");
 
 
@@ -225,7 +225,7 @@ impl TorrentManagerActor{
                     self.peer_bitfields.get_mut(&peer_id).unwrap().set(index, true);
 
                 },
-                PieceFinish{ peer_id: _, index}=>{
+                PieceFinish{ _peer_id: _, index}=>{
                     //we should set the local_bitfield that we have the piece, and we shold trigger a update_Freq_have with the current piece id
                     if self.local_bitfield.get(index).unwrap() == true{
                         //We have already gotten this news from some other peer
@@ -256,7 +256,6 @@ impl TorrentManagerActor{
                         let current_piece_len = last_piece_manager.clone().piece_length;
                         self.disk_manager.flush_piece_to_disk(last_piece_manager).await;
                         self.stats.downloaded = (self.stats.downloaded.parse::<f64>().unwrap() +  current_piece_len as f64 /1000000 as f64).to_string();
-                        log::info!("Stats : {:?}", self.stats);
                     } 
                     //TODO = Trigger a flush of piece to disk by sending over the peice manager that is currently storing the piece in mem
                     //we should use the amove last_manager_copy to make it happen
@@ -287,11 +286,11 @@ impl TorrentManagerActor{
                         },
                         None => {
                             log::error!("A peer we arent tracking is asking for its active work!");
-                            reply.send(None);
+                            let _ = reply.send(None);
                             continue;
                         }
                     };
-                    reply.send(Some(updated_list));
+                    let _ = reply.send(Some(updated_list));
                     
                 },
                 HasUsefulPieces{
@@ -301,12 +300,17 @@ impl TorrentManagerActor{
                     let peer_bf= self.peer_bitfields.get(&peer_id).unwrap().clone();
                     let mask = !(self.local_bitfield.clone()) & peer_bf;
                     if mask.count_ones() > 0{
-                        reply.send(true);
+                        let _ = reply.send(true);
                         continue;
                     }
-                    reply.send(false);
+                    let _ = reply.send(false);
+                },
+                GetActivePeers{
+                    reply
+                } => {
+                    let active_peers = self.peer_bitfields.keys().cloned().collect::<Vec<String>>();
+                    let _ = reply.send(Some(active_peers));
                 }
-
                 //[TODO] => Add handlers for all other types of messages
                 _ => {
                     log::error!("Unkown message recived in torrent manager : {:?}", msg)
@@ -329,11 +333,12 @@ enum TorrentManagerMessage{
         peer_id: String, 
         peer_bitfield: BitVec<u8, Msb0>
     },
+    #[allow(dead_code)]
     RemovePeer{ //TODO
         peer_id: String
     }, 
     PieceFinish{ //DONE- Partially
-        peer_id: String, 
+        _peer_id: String, 
         index: usize, //piece index, not chunk
     },
     RequestWork{//DONE
@@ -350,6 +355,9 @@ enum TorrentManagerMessage{
     HasUsefulPieces{ //DONE
         peer_id: String,
         reply: oneshot::Sender<bool>
+    },
+    GetActivePeers{ //TODO
+        reply: oneshot::Sender<Option<Vec<String>>>
     }
 }
 
@@ -372,22 +380,28 @@ impl TorrentManager{
     }
 
     pub async fn piece_finish(&self, peer_id: String, piece_index: u64) { 
-        self.send.send(PieceFinish { peer_id, index: piece_index as usize }).await;
+        let _ = self.send.send(PieceFinish { _peer_id: peer_id, index: piece_index as usize }).await;
     }
 
     pub async fn get_torrent_stats(&self)->Option<TorrentStats>{
         let (tx,rx) = oneshot::channel::<TorrentStats>();
-        self.send.send(TorrentManagerMessage::GetTorrentStats { send:tx}).await;
+        let _ = self.send.send(TorrentManagerMessage::GetTorrentStats { send:tx}).await;
         rx.await.ok()
     }
 
+    pub async fn get_active_peers(&self) -> Option<Vec<String>>{
+        let (tx,rx) = oneshot::channel::<Option<Vec<String>>>();
+        let _ = self.send.send(TorrentManagerMessage::GetActivePeers { reply: tx }).await;
+        rx.await.ok().unwrap_or(None)
+    }
+
     pub async fn add_new_peer(&self, bit_vec: BitVec<u8,Msb0>, peer_id: String) {
-        self.send.send(TorrentManagerMessage::AddPeer { peer_id, peer_bitfield: bit_vec }).await;
+        let _ = self.send.send(TorrentManagerMessage::AddPeer { peer_id, peer_bitfield: bit_vec }).await;
     }
 
     pub async fn request_piece(&self, peer_id: String) -> Option<Arc<PieceRequestManager>>{
         let (tx,rx) = oneshot::channel::<Option<Arc<PieceRequestManager>>>();
-        self.send.send(TorrentManagerMessage::RequestWork { peer_id, reply: tx }).await;
+        let _ = self.send.send(TorrentManagerMessage::RequestWork { peer_id, reply: tx }).await;
         match rx.await.ok(){
             None => None,
             Some(v) => v
@@ -403,24 +417,24 @@ impl TorrentManager{
      */
     pub async fn update_and_get_active_request_count(&self, peer_id: String) -> Option<Vec<(usize, Instant)>>{
         let (tx,rx) = oneshot::channel::<Option<Vec<(usize, Instant)>>>();
-        self.send.send(TorrentManagerMessage::UpdateAndGetActiveRequestCount { peer_id, reply : tx}).await;
+        let _ = self.send.send(TorrentManagerMessage::UpdateAndGetActiveRequestCount { peer_id, reply : tx}).await;
         rx.await.unwrap_or(None)
     }
 
     pub async fn add_bitfield(&self,peer_id: String, bit_vec: BitVec<u8,Msb0>) -> bool{
-        self.send.send(TorrentManagerMessage::AddBitFeild { peer_id: peer_id.clone(), peer_bitfield: bit_vec }).await;
+        let _ = self.send.send(TorrentManagerMessage::AddBitFeild { peer_id: peer_id.clone(), peer_bitfield: bit_vec }).await;
         let (tx,rx) = oneshot::channel::<bool>();
-        self.send.send(TorrentManagerMessage::HasUsefulPieces { peer_id, reply: tx }).await;
+        let _ = self.send.send(TorrentManagerMessage::HasUsefulPieces { peer_id, reply: tx }).await;
         rx.await.unwrap_or(false)
     }
 
     pub async fn update_bitfield(&self,peer_id: String, piece_index: u64){
-        self.send.send(TorrentManagerMessage::UpdateBitField { peer_id, index: piece_index as usize }).await;
+        let _ = self.send.send(TorrentManagerMessage::UpdateBitField { peer_id, index: piece_index as usize }).await;
     }
 
     pub async  fn has_useful_pieces(&self, peer_id: String) -> bool {
         let (tx,rx) = oneshot::channel::<bool>();
-        self.send.send(TorrentManagerMessage::HasUsefulPieces { peer_id, reply: tx }).await;
+        let _ = self.send.send(TorrentManagerMessage::HasUsefulPieces { peer_id, reply: tx }).await;
         rx.await.ok().unwrap()
     }
 }

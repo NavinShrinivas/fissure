@@ -195,7 +195,7 @@ pub async fn state_machine(
             requests.retain(|&k, _| still_active_requests.iter().any(|t| t.0 == k as usize));
             
             if requests.len() != old_len {
-                log::info!("Watchdog pruned stale pieces. Notifying writer.");
+                log::debug!("Watchdog pruned stale pieces. Notifying writer.");
                 watchdog_peer_network_state.state_update.notify_one();
             }
         }

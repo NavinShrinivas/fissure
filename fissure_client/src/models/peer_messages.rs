@@ -16,6 +16,7 @@ pub enum PeerMessage{
     //TODO - We should see how to handle above request,
     // AKA how to reply to them from the writer loop
     Piece {piece_index: u64, block_offset: u64, data: Vec<u8>},
+    #[allow(dead_code)]
     Cancel {piece_index: u64, block_offset: u64, length: u64}, 
     //Cancel cancels any request the peer may have made, used during endgames specifically
     Port {
