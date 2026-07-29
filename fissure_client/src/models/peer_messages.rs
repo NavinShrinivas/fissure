@@ -133,6 +133,18 @@ impl Encoder<PeerMessage> for PeerCodec {
             PeerMessage::KeepAlive => {
                 // Keep alive is explicitly a 4-byte length of 0 with no ID
                 dst.put_u32(0);
+            },
+            PeerMessage::Bitfield { bitfield } => {
+                let bitfield_bytes = bitfield.into_vec();
+                let message_length = 1 + bitfield_bytes.len() as u32; // 1 byte for the ID + length of the bitfield
+                dst.put_u32(message_length); // 4-byte Message Length
+                dst.put_u8(5); // 1-byte Message Type ID (5 = Bitfield)
+                dst.extend_from_slice(&bitfield_bytes); // Append the bitfield bytes
+            },
+            PeerMessage::Have { piece_index } => {
+                dst.put_u32(5); // 4-byte Message Length (1 byte for ID + 4 bytes for piece index)
+                dst.put_u8(4);  // 1-byte Message Type ID (4 = Have)
+                dst.put_u32(piece_index as u32); // 4-byte piece index
             }
             _ => {
                 // For v1, we can stub out or log other outbound messages we don't send yet

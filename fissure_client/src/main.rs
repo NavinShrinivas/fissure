@@ -23,7 +23,7 @@ use crate::managers::client_manager::ClientManager;
 pub struct ClientEnv {
     #[arg(long, default_value = "settings.yaml")]
     settings_yaml: String,
-    #[arg(long, default_value = "test.torrent")]
+    #[arg(long, default_value = "../test_torrent_files/test.torrent")]
     torrent_file: String,
 }
 
