@@ -2,6 +2,7 @@ use crate::managers::piece_manager::PieceRequestManager;
 use crate::managers::torrent_manager::TorrentManager;
 use crate::models::peer_messages::{PeerCodec, PeerMessage};
 use crate::protocols::peer_handshake::{PeerConnection};
+use bitvec::vec::BitVec;
 use futures::{SinkExt, StreamExt};
 use tokio_util::codec::{ Framed};
 use std::collections::HashMap;
@@ -10,7 +11,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{ AtomicU64};
 use std::time::{Duration};
 use tokio::net::tcp::OwnedWriteHalf;
-use tokio::sync::{Notify, RwLock};
+use tokio::sync::{Notify, RwLock, watch};
 use rand::prelude::*;
 
 use log::{debug, error, info};
@@ -149,13 +150,6 @@ pub async fn state_machine(
     mut peer_conn: PeerConnection
 ) {
 
-    let peer_network_state = Arc::new(PeerFSMNetworkState{
-        pending_active_request_count: AtomicU64::new(0),
-        inflight_messages: AtomicU64::new(0),
-        active_requests: RwLock::new(HashMap::new()),
-        state_update: Notify::new(),
-        block_acked: Notify::new(),
-    });
     // This moves ownership of the socket out, leaving the rest of the struct intact.
     let conn = peer_conn.conn.take().expect("Connection already used up.");
     let (reader, writer) = conn.into_split();
@@ -163,6 +157,17 @@ pub async fn state_machine(
     let share_peer_state = Arc::new(RwLock::new(peer_conn));
 
     debug!("PeerFSN: Starting protocol state machine for one peer");
+    let res_peer_id = share_peer_state.read().await.state.peer_id.clone().unwrap();
+    log::debug!("Registering with torrent manager..");
+    let (local_bitfield , peer_recv_count) = torrent_manager.add_new_peer(BitVec::new(), res_peer_id.clone()).await;
+
+    let peer_network_state = Arc::new(PeerFSMNetworkState{
+        pending_active_request_count: AtomicU64::new(0),
+        inflight_messages: AtomicU64::new(0),
+        active_requests: RwLock::new(HashMap::new()),
+        state_update: Notify::new(),
+        block_acked: Notify::new(),
+    });
 
     let peer_id_key = share_peer_state.read().await.state.peer_id.clone()
         .expect("Peer ID must be assigned before starting FSM loop");
@@ -204,15 +209,20 @@ pub async fn state_machine(
     let writer_manager_handler = torrent_manager.clone();
     let writer_network_state = peer_network_state.clone();
     let writer_peer_state = share_peer_state.clone();
+    let mut writer_peer_recv_count = peer_recv_count.clone();
 
     let writer_join_handle = tokio::spawn(async move {
         let mut framed_writer = Framed::new(writer, PeerCodec::new());
+
+        //sending our bitfield to the peer as the first thing after handshake
+        framed_writer.send(PeerMessage::Bitfield { bitfield: local_bitfield }).await.expect("Failed to send bitfield to peer");
 
         let mut request_ticker = tokio::time::interval(std::time::Duration::from_secs(2));
         let state_notified = writer_network_state.state_update.notified();
         let block_notified = writer_network_state.block_acked.notified();
         tokio::pin!(state_notified);
         tokio::pin!(block_notified);
+        let mut last_seen: u64 = *writer_peer_recv_count.borrow_and_update();
         
         // Startup pass: send Interested / kick off initial piece + block requests.
         if !run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await {
@@ -220,12 +230,18 @@ pub async fn state_machine(
         }
 
         loop {
-            enum Wake { State, Block, Tick }
-
+            enum Wake { State, Block, Tick, Have }
             let wake = tokio::select! {
                 _ = &mut state_notified => Wake::State,
                 _ = &mut block_notified => Wake::Block,
                 _ = request_ticker.tick() => Wake::Tick,
+                changed = writer_peer_recv_count.changed() => {
+                    if changed.is_err() {
+                        // store/sender dropped, treat like a fatal condition for this peer
+                        return;
+                    }
+                    Wake::Have
+                }
             };
 
             let ok = match wake {
@@ -241,6 +257,21 @@ pub async fn state_machine(
                 }
                 Wake::Tick => {
                     run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await
+                }
+                Wake::Have => {
+                    let current_len = *writer_peer_recv_count.borrow_and_update();
+                    let mut ok = true;
+                    let new_pieces = writer_manager_handler.get_have_message_progress(last_seen).await.unwrap();
+                    for piece_index in new_pieces {
+                        log::debug!("PeerFSM: Sending Have message for piece index: {}", piece_index);
+                        if let Err(e) = framed_writer.send(PeerMessage::Have { piece_index: piece_index as u64 }).await {
+                            log::warn!("failed to send Have to peer: {e}");
+                            ok = false;
+                            break;
+                        }
+                    }
+                    last_seen = current_len;
+                    ok
                 }
             };
 

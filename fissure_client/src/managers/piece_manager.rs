@@ -4,7 +4,7 @@ use bitvec::prelude::*;
 use sha1::{Digest, Sha1};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::managers::piece_manager::PieceRequestManagerMessage::{BlockRecived, BlocksToRequest, GetData};
+use crate::managers::piece_manager::PieceRequestManagerMessage::{BlockRecived, BlocksToRequest, GetData, GetDataWithLen};
 
 
 #[derive(Debug)]
@@ -146,6 +146,22 @@ impl PieceRequestManagerActor{
 
                                     let _ = sender.send(slice);
                                 },
+                                GetDataWithLen { start_offset, len, sender } => {
+                                    let start = start_offset as usize;
+                                    let end = start + len as usize;
+
+                                    let slice = if end <= self.data.len() && start <= end {
+                                        self.data[start..end].to_vec()
+                                    } else {
+                                        log::error!(
+                                            "GetDataWithLen out-of-bounds request: [{}, {}) but data len is {}",
+                                            start, end, self.data.len()
+                                        );
+                                        Vec::new()
+                                    };
+
+                                    let _ = sender.send(slice);
+                                },
                                 _ => {
                                     log::error!("Unkown message recived in piece manager : {:?}", msg)
                                 }
@@ -198,6 +214,11 @@ pub enum PieceRequestManagerMessage{
     GetData {
         start_offset: u64,
         end_offset: u64,
+        sender: oneshot::Sender<Vec<u8>>,
+    },
+    GetDataWithLen {
+        start_offset: u64,
+        len: u64,
         sender: oneshot::Sender<Vec<u8>>,
     },
 
@@ -254,6 +275,12 @@ impl PieceRequestManager{
             sender: tx,
         }).await;
 
+        rx.await.unwrap_or_default()
+    }
+
+    pub async fn get_data_with_len(&self, start_offset: u64, len: u64) -> Vec<u8>{
+        let (tx, rx) = oneshot::channel::<Vec<u8>>();
+        let _ = self.send.send(PieceRequestManagerMessage::GetDataWithLen { start_offset, len, sender: tx }).await;
         rx.await.unwrap_or_default()
     }
 }

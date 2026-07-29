@@ -105,8 +105,6 @@ impl PeerConnection {
         let res_peer_id = String::from_utf8_lossy(peer_id_bytes).into_owned();
         log::debug!("Handshake completed with peer: {:?}", res_peer_id);
 
-        log::debug!("Registering with torrent manager..");
-        torrent_manager.add_new_peer(BitVec::new(), res_peer_id.clone()).await;
 
         Some(PeerConnection::init_connection(
             stream,
