@@ -1,4 +1,4 @@
-## Fissure : Yet another torrent client, build from scratch (almost)
+## Fissure : Yet another torrent client, built from scratch (almost)
 
 ## Limitation 
 
