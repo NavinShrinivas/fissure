@@ -1,5 +1,8 @@
 ## Fissure : Yet another torrent client, built from scratch (almost)
 
+## My architecture : 
+![image](./fissure.jpg)
+
 ## Limitation 
 
 ### Ones that I inted to solve : 
