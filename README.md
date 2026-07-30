@@ -17,13 +17,16 @@
 
 
 ## Tasks in focus : 
-- [ ] Cleaner logging
+- [x] Cleaner logging
 - [ ] become a seeder. dont be a leecher.
+- [ ] Build an integration test, atleast for the following:
+    - [ ] Trackers
+    - [ ] Download 
+    - [ ] Upload (Note: We can make use of transmission in leacher mode for this.)
 - [ ] Make timings and config applicable amd find the right pieces/peer ratio and timeouts for pieces and blocks to achive better performance
 - [ ] Smart peer selection to get more download speed
 - [ ] An UI (Fancy maybe?)
     - [ ] wire it up to handle multiple torrents, the underlying services already do.
-- [ ] Uploads
 
 
 ## Specs I used to build this : 
