@@ -4,7 +4,8 @@ use bitvec::prelude::*;
 use tokio::sync::{Notify, mpsc, oneshot, watch};
 use std::sync::Arc;
 
-use crate::managers::{client_manager::ClientTorrentMetaInfo, disk_manager::DiskManager, piece_manager::PieceRequestManager, torrent_manager::TorrentManagerMessage::{AddBitFeild, GetActivePeers, GetDataWithLength, GetHaveMessageProgress, GetTorrentStats, HasUsefulPieces, PieceFinish, RequestWork, UpdateAndGetActiveRequestCount, UpdateBitField}};
+use crate::managers::{client_manager::ClientTorrentMetaInfo, disk_manager::DiskManager, piece_manager::PieceRequestManager, torrent_manager::TorrentManagerMessage::{AddBitFeild, GetActivePeers, GetDataWithLength, GetHaveMessageProgress, GetPieceManager, GetTorrentStats, HasUsefulPieces, PieceFinish, RequestWork, UpdateAndGetActiveRequestCount, UpdateBitField}};
+use crate::models::peer_settings::PeerOptions;
 
 
 #[derive(Clone, Debug)]
@@ -33,10 +34,11 @@ struct TorrentManagerActor{
     //Dont need rwlock on it, because any contention causing old read is fine...
     pub peer_notifier_send: watch::Sender<u64>,
     pub recv: mpsc::Receiver<TorrentManagerMessage>,
+    pub peer_options: PeerOptions,
 }
 
 impl TorrentManagerActor{
-    fn new(torrent: Arc<ClientTorrentMetaInfo>, recv: mpsc::Receiver<TorrentManagerMessage>, download_path: String, peer_notifier_send: watch::Sender<u64>) -> Self{
+    fn new(torrent: Arc<ClientTorrentMetaInfo>, recv: mpsc::Receiver<TorrentManagerMessage>, download_path: String, peer_notifier_send: watch::Sender<u64>, peer_options: PeerOptions) -> Self{
         let num_of_p = torrent.clone().raw_torrent.get_number_of_pieces();
         let files = torrent.clone().files.clone();
         let std_piece_len = torrent.clone().raw_torrent.get_standard_piece_len();
@@ -58,7 +60,8 @@ impl TorrentManagerActor{
             disk_manager: DiskManager::new(download_path, files, std_piece_len),
             downloaded_piece_index: Vec::new(),
             peer_notifier_send,
-            recv
+            recv,
+            peer_options
         }
     }
     fn update_freq_bitfield(&mut self, bitfield: &BitVec<u8,Msb0>, peer_id: &String) {
@@ -159,9 +162,9 @@ impl TorrentManagerActor{
                                 false
                             }
                         };
-                        let active_count_less_than_6 = match self.piece_concurrency_counts.get(&idx){
+                        let active_count_within_cap = match self.piece_concurrency_counts.get(&idx){
                             Some(len) => {
-                                *len <= 5 as usize
+                                *len <= self.peer_options.per_piece_active_peer_count
                             },
                             None => {
                                 //If the value is None of the key, meaning we are done downloading this piece
@@ -177,12 +180,12 @@ impl TorrentManagerActor{
                                 false
                             }
                         };
-                        return has_piece && !already_downloaded && active_count_less_than_6 && !this_peer_already_assigned_this_request
+                        return has_piece && !already_downloaded && active_count_within_cap && !this_peer_already_assigned_this_request
                     })
                     .copied();
 
                     if req_piece.is_none(){
-                        // log::error!("We couldnt compute a piece request in the torrent, despite the piece still not having been completed. It is possible all the available pieces are already active in atleast 5 peers.");
+                        // log::error!("We couldnt compute a piece request in the torrent, despite the piece still not having been completed. It is possible all the available pieces are already active in atleast per_piece_active_peer_count peers.");
                         let _ = reply.send(None);
                         continue;
                     }
@@ -196,7 +199,7 @@ impl TorrentManagerActor{
                             manager.clone()
                         }, 
                         None => {
-                            let new_manager = Arc::new(PieceRequestManager::new(index as u64, self.client_torrent_meta.raw_torrent.get_piece_hash(index).into(), self.client_torrent_meta.raw_torrent.get_piece_length(index)));
+                            let new_manager = Arc::new(PieceRequestManager::new(index as u64, self.client_torrent_meta.raw_torrent.get_piece_hash(index).into(), self.client_torrent_meta.raw_torrent.get_piece_length(index), self.peer_options.block_request_timeout));
                             self.active_pieces_manager.insert(index, new_manager.clone());
                             new_manager.clone()
                         }
@@ -276,10 +279,10 @@ impl TorrentManagerActor{
 
                 }
                 UpdateAndGetActiveRequestCount{
-                    peer_id, 
+                    peer_id,
                     reply
                 } => {
-                    let timeout = Duration::from_secs(60);
+                    let timeout = Duration::from_secs(self.peer_options.piece_request_timeout as u64);
                     let now = Instant::now();
                     let updated_list = match self.peer_active_work.get_mut(&peer_id){
                         Some(v) => {
@@ -326,13 +329,22 @@ impl TorrentManagerActor{
                     let _ = reply.send(Some(active_peers));
                 },
                 GetDataWithLength{
-                    piece_index, 
-                    offset, 
-                    length, 
+                    piece_index,
+                    offset,
+                    length,
                     reply
                 } => {
                     let data = self.disk_manager.get_data_with_length(piece_index as u32, offset as u32, length as u32).await;
                     let _ = reply.send(data);
+                },
+                GetPieceManager{
+                    piece_index,
+                    reply
+                } => {
+                    //Used by the peer FSM to deliver blocks for pieces it no longer
+                    //tracks locally (assignment timed out / another peer finished it).
+                    //Returns None if the piece is already done and gone.
+                    let _ = reply.send(self.active_pieces_manager.get(&piece_index).cloned());
                 },
                 GetHaveMessageProgress{
                     since, 
@@ -393,10 +405,14 @@ enum TorrentManagerMessage{
         reply: oneshot::Sender<Option<Vec<String>>>
     },
     GetDataWithLength{ //TODO
-        piece_index: usize, 
-        offset: usize, 
-        length: usize, 
+        piece_index: usize,
+        offset: usize,
+        length: usize,
         reply: oneshot::Sender<Option<Vec<u8>>>
+    },
+    GetPieceManager{ //DONE
+        piece_index: usize,
+        reply: oneshot::Sender<Option<Arc<PieceRequestManager>>>
     },
     GetHaveMessageProgress{ //TODO
         since: u64, //get all the pieces we have downloaded since this index
@@ -409,21 +425,26 @@ pub struct TorrentManager{
     send: mpsc::Sender<TorrentManagerMessage>,
     pub meta : Arc<ClientTorrentMetaInfo>,
     peer_notifier_recv: watch::Receiver<u64>,
-
+    peer_options: PeerOptions,
 }
 
 impl TorrentManager{
-    pub fn new(client_torrent_meta_info: ClientTorrentMetaInfo, download_path: String) -> Self{
+    pub fn new(client_torrent_meta_info: ClientTorrentMetaInfo, download_path: String, peer_options: PeerOptions) -> Self{
         let (send, recv) = mpsc::channel(400);
         let (peer_notifier_send, peer_notifiler_recv) = watch::channel::<u64>(0);
         let arc_ctmi = Arc::new(client_torrent_meta_info);
-        let actor = TorrentManagerActor::new(arc_ctmi.clone(), recv, download_path, peer_notifier_send);
+        let actor = TorrentManagerActor::new(arc_ctmi.clone(), recv, download_path, peer_notifier_send, peer_options);
         tokio::spawn(async move{actor.run().await});
-        TorrentManager { 
+        TorrentManager {
             send,
             meta: arc_ctmi,
             peer_notifier_recv: peer_notifiler_recv,
+            peer_options,
         }
+    }
+
+    pub fn get_peer_options(&self) -> PeerOptions {
+        self.peer_options
     }
 
     pub async fn piece_finish(&self, peer_id: String, piece_index: u64) { 
@@ -491,6 +512,17 @@ impl TorrentManager{
         let (tx,rx) = oneshot::channel::<Option<Vec<u8>>>();
         let _ = self.send.send(TorrentManagerMessage::GetDataWithLength { piece_index, offset, length, reply: tx }).await;
         rx.await.ok().unwrap_or(None)
+    }
+
+    /**
+     * Returns the shared piece manager for a piece if it is still
+     * active anywhere in the torrent, None if the piece is done.
+     * Lets the FSM deliver late-arriving blocks instead of dropping them.
+     */
+    pub async fn get_piece_manager(&self, piece_index: u64) -> Option<Arc<PieceRequestManager>>{
+        let (tx,rx) = oneshot::channel::<Option<Arc<PieceRequestManager>>>();
+        let _ = self.send.send(TorrentManagerMessage::GetPieceManager { piece_index: piece_index as usize, reply: tx }).await;
+        rx.await.unwrap_or(None)
     }
 
     pub async fn get_have_message_progress(&self, since: u64) -> Option<Vec<u32>>{

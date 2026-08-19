@@ -16,13 +16,14 @@ pub struct PieceRequestManagerActor{
     required_blocks: BitVec<u8>,
     data: Vec<u8>,
     hash: Vec<u8>,
+    block_request_timeout: usize, //seconds, from peer config
     recv: mpsc::Receiver<PieceRequestManagerMessage>
 }
 
 const BLOCK_SIZE: u32 = 16_384;
 
 impl PieceRequestManagerActor{
-    pub fn new(p_len: u64, recv: mpsc::Receiver<PieceRequestManagerMessage>, hash: Vec<u8>) -> Self{
+    pub fn new(p_len: u64, recv: mpsc::Receiver<PieceRequestManagerMessage>, hash: Vec<u8>, block_request_timeout: usize) -> Self{
 
         let last_block_size = p_len % 16384;
         let no_of_blocks = if last_block_size == 0{
@@ -42,10 +43,11 @@ impl PieceRequestManagerActor{
             last_piece_size : if last_block_size == 0 {16384} else {last_block_size},
             downloaded_blocks : bitvec![u8, Lsb0; 0; no_of_blocks as usize],
             blocks_in_flight: bitvec![u8, Lsb0; 0; no_of_blocks as usize],
-            required_blocks: req_p, 
+            required_blocks: req_p,
             data,
             recv,
-            hash
+            hash,
+            block_request_timeout
         }
     }
 
@@ -61,7 +63,9 @@ impl PieceRequestManagerActor{
         //This ticker is the time a given peer can exclusively have the attempt at requesting a block
         //If not recieved within this time, this piecemanager is free to request them from other peer as well.
         //Although the blocks recived from previous peers are not discarded.
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(4));
+        //Tick at least as often as the configured timeout (but no faster than once a second).
+        let tick_interval_secs = std::cmp::max(1, std::cmp::min(4, self.block_request_timeout)) as u64;
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(tick_interval_secs));
         loop{
             tokio::select! {
                 msg_opt = self.recv.recv() => {
@@ -175,7 +179,7 @@ impl PieceRequestManagerActor{
                 },
                 _ = ticker.tick() => {
                     let now = Instant::now();
-                    let timeout = std::time::Duration::from_secs(5);
+                    let timeout = std::time::Duration::from_secs(self.block_request_timeout as u64);
 
                     // Identify expired blocks
                     let expired: Vec<u64> = self.in_flight_timers.iter()
@@ -235,12 +239,12 @@ pub struct PieceRequestManager{
 }
 
 impl PieceRequestManager{
-    pub fn new(index: u64, sha1_hash: Vec<u8>, p_len: u64) -> Self{
+    pub fn new(index: u64, sha1_hash: Vec<u8>, p_len: u64, block_request_timeout: usize) -> Self{
         let (send, recv) = mpsc::channel(400);
-        let actor = PieceRequestManagerActor::new(p_len, recv, sha1_hash.clone());
+        let actor = PieceRequestManagerActor::new(p_len, recv, sha1_hash.clone(), block_request_timeout);
         tokio::spawn(async move{actor.run().await});
         Self{
-            index, 
+            index,
             sha1_hash,
             piece_length: p_len,
             send

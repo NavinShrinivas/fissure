@@ -36,6 +36,7 @@ pub struct Info {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct MetaInfo {
+    #[serde(default = "String::new")]
     pub announce: String, // Contains the url for the tracker
     #[serde(rename = "announce-list")]
     #[serde(skip_serializing_if = "Option::is_none")]

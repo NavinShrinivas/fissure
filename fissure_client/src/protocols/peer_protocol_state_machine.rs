@@ -1,6 +1,7 @@
 use crate::managers::piece_manager::PieceRequestManager;
 use crate::managers::torrent_manager::TorrentManager;
 use crate::models::peer_messages::{PeerCodec, PeerMessage};
+use crate::models::peer_settings::PeerOptions;
 use crate::protocols::peer_handshake::{PeerConnection};
 use bitvec::vec::BitVec;
 use futures::{SinkExt, StreamExt};
@@ -16,9 +17,6 @@ use rand::prelude::*;
 
 use log::{debug, error, info};
 
-const MAX_INFLIGHT: u64 = 25;
-const MAX_ACTIVE_PIECES: u64 = 5;
-
 pub struct PeerFSMNetworkState{
     pub pending_active_request_count: AtomicU64,
     pub inflight_messages: AtomicU64, //number of block reqs in flight
@@ -33,16 +31,18 @@ async fn top_off_inflight_window(
     network_state: &Arc<PeerFSMNetworkState>,
     framed_writer: &mut Framed<OwnedWriteHalf, PeerCodec>,
     is_choked: bool,
+    peer_options: PeerOptions,
 ) -> Option<bool> {
     if is_choked {
         return Some(false);
     }
 
+    let max_inflight = peer_options.per_peer_inflight_count as u64;
     let inflight_count = network_state.inflight_messages.load(SeqCst);
-    if inflight_count >= MAX_INFLIGHT {
+    if inflight_count >= max_inflight {
         return Some(false);
     }
-    let available_window = (MAX_INFLIGHT - inflight_count) as usize;
+    let available_window = (max_inflight - inflight_count) as usize;
 
     let mut candidates: Vec<Arc<PieceRequestManager>> = {
         let guard = network_state.active_requests.read().await;
@@ -88,10 +88,11 @@ async fn run_window_topoff(
     peer_state: &Arc<RwLock<PeerConnection>>,
     network_state: &Arc<PeerFSMNetworkState>,
     framed_writer: &mut Framed<OwnedWriteHalf, PeerCodec>,
+    peer_options: PeerOptions,
 ) -> bool {
     let is_choked = peer_state.read().await.state.peer_choking;
     loop {
-        match top_off_inflight_window(network_state, framed_writer, is_choked).await {
+        match top_off_inflight_window(network_state, framed_writer, is_choked, peer_options).await {
             Some(true) => continue,
             Some(false) => return true,
             None => return false,
@@ -106,6 +107,7 @@ async fn run_full_pass(
     manager: &TorrentManager,
     network_state: &Arc<PeerFSMNetworkState>,
     framed_writer: &mut Framed<OwnedWriteHalf, PeerCodec>,
+    peer_options: PeerOptions,
 ) -> bool {
     loop {
         let (is_choked, has_useful, is_interested) = {
@@ -125,7 +127,7 @@ async fn run_full_pass(
         let mut made_progress = false;
 
         let active_pieces_count = network_state.pending_active_request_count.load(SeqCst);
-        if !is_choked && active_pieces_count < MAX_ACTIVE_PIECES {
+        if !is_choked && active_pieces_count < peer_options.per_peer_active_request_count as u64 {
             let peer_id = peer_state.read().await.state.peer_id.clone().unwrap();
             if let Some(req) = manager.request_piece(peer_id).await {
                 network_state.active_requests.write().await.insert(req.index, req);
@@ -134,7 +136,7 @@ async fn run_full_pass(
             }
         }
 
-        match top_off_inflight_window(network_state, framed_writer, is_choked).await {
+        match top_off_inflight_window(network_state, framed_writer, is_choked, peer_options).await {
             Some(progressed) => made_progress = made_progress || progressed,
             None => return false,
         }
@@ -154,6 +156,7 @@ pub async fn state_machine(
     let conn = peer_conn.conn.take().expect("Connection already used up.");
     let (reader, writer) = conn.into_split();
     let torrent_manager = peer_conn.torrent_manager.clone();
+    let peer_options = torrent_manager.get_peer_options();
     let share_peer_state = Arc::new(RwLock::new(peer_conn));
 
     debug!("PeerFSN: Starting protocol state machine for one peer");
@@ -225,7 +228,7 @@ pub async fn state_machine(
         let mut last_seen: u64 = *writer_peer_recv_count.borrow_and_update();
         
         // Startup pass: send Interested / kick off initial piece + block requests.
-        if !run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await {
+        if !run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer, peer_options).await {
             return;
         }
 
@@ -247,16 +250,16 @@ pub async fn state_machine(
             let ok = match wake {
                 Wake::State => {
                     state_notified.set(writer_network_state.state_update.notified());
-                    run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await
+                    run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer, peer_options).await
                 }
                 Wake::Block => {
                     block_notified.set(writer_network_state.block_acked.notified());
                     // Lightweight path - a block being acked only ever needs the request
                     // window topped off, not a full re-evaluation (new piece / interest state).
-                    run_window_topoff(&writer_peer_state, &writer_network_state, &mut framed_writer).await
+                    run_window_topoff(&writer_peer_state, &writer_network_state, &mut framed_writer, peer_options).await
                 }
                 Wake::Tick => {
-                    run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer).await
+                    run_full_pass(&writer_peer_state, &writer_manager_handler, &writer_network_state, &mut framed_writer, peer_options).await
                 }
                 Wake::Have => {
                     let current_len = *writer_peer_recv_count.borrow_and_update();
@@ -333,8 +336,11 @@ pub async fn state_machine(
                         },
                         PeerMessage::Piece { piece_index, block_offset, data } => {
                             log::debug!("Received a block for piece {}", piece_index);
-                            reader_network_state.inflight_messages.fetch_sub(1, SeqCst);
-                            
+                            // Saturating: blocks may still arrive after a Choke reset the
+                            // counter, and a u64 underflow here would stall the request
+                            // window for this peer permanently.
+                            reader_network_state.inflight_messages.fetch_update(SeqCst, SeqCst, |v| Some(v.saturating_sub(1))).ok();
+
                             let piece_manager = {
                                 let guard = reader_network_state.active_requests.read().await;
                                 guard.get(&piece_index).cloned() // Clones the Arc pointer, not the whole manager
@@ -346,9 +352,12 @@ pub async fn state_machine(
                                     reader_manager_handler.piece_finish(peer_id.clone(), piece_index).await;
                                     // Free the active-piece slot immediately - don't wait for the
                                     // periodic watchdog to notice, or the peer will stall believing
-                                    // it's still maxed out on MAX_ACTIVE_PIECES.
-                                    reader_network_state.active_requests.write().await.remove(&piece_index);
-                                    reader_network_state.pending_active_request_count.fetch_sub(1, SeqCst);
+                                    // it's still maxed out on per_peer_active_request_count.
+                                    // Only decrement if the piece was still tracked locally - the
+                                    // watchdog may have pruned it concurrently.
+                                    if reader_network_state.active_requests.write().await.remove(&piece_index).is_some() {
+                                        reader_network_state.pending_active_request_count.fetch_update(SeqCst, SeqCst, |v| Some(v.saturating_sub(1))).ok();
+                                    }
                                     // A piece finished - that's a real state change (frees an active-piece
                                     // slot), so it warrants a full pass to pick up a new piece promptly.
                                     reader_network_state.state_update.notify_one();
@@ -357,7 +366,29 @@ pub async fn state_machine(
                                     reader_network_state.block_acked.notify_one();
                                 }
                             } else {
-                                log::warn!("Received block for untracked piece index: {}", piece_index);
+                                // This peer's FSM no longer tracks this piece (watchdog pruned it
+                                // after the assignment timed out, or another peer already completed
+                                // it). If the piece is still active elsewhere, deliver the block to
+                                // it anyway - it may be the last block the piece needed.
+                                match reader_manager_handler.get_piece_manager(piece_index).await {
+                                    Some(mgr) => {
+                                        let hash_matched = mgr.block_recvied(block_offset as usize, data).await;
+                                        if hash_matched{
+                                            reader_manager_handler.piece_finish(peer_id.clone(), piece_index).await;
+                                            reader_network_state.state_update.notify_one();
+                                        } else {
+                                            // Block landed into a piece other peers are driving -
+                                            // this peer's request window just freed up a slot.
+                                            reader_network_state.block_acked.notify_one();
+                                        }
+                                    },
+                                    None => {
+                                        // Piece is fully done - the block was still in flight when
+                                        // it completed elsewhere. Nothing left to deliver it to.
+                                        log::debug!("Dropping late block for completed piece {}", piece_index);
+                                        reader_network_state.block_acked.notify_one();
+                                    }
+                                }
                             }
                         }
                        

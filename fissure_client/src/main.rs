@@ -15,6 +15,13 @@ use std::collections::HashMap;
 
 use crate::managers::client_manager::ClientManager;
 
+                           
+#[cfg(feature = "heapprofile")]
+use dhat::{Alloc, Profiler};
+
+#[cfg_attr(feature = "heapprofile", global_allocator)]
+#[cfg(feature = "heapprofile")]
+static ALLOCATOR: dhat::Alloc = dhat::Alloc;
 
 #[derive(Parser, Debug)]
 #[command(name = "fissure")]
@@ -29,6 +36,8 @@ pub struct ClientEnv {
 
 #[tokio::main]
 async fn main() {
+    #[cfg(feature = "heapprofile")]
+    let _profiler = Profiler::new_heap();
     //console_subscriber::init();
     static LOCAL_CLIENT_ENV: once_cell::sync::Lazy<ClientEnv> =
         once_cell::sync::Lazy::new(|| ClientEnv::parse());

@@ -36,7 +36,7 @@ impl Default for FissureClientOptions {
 pub enum ClientActorMessage{
     AddTorret{
         torrent_file_path: String,
-        _peer_settings: PeerOptions,
+        peer_settings: PeerOptions,
         download_path: String,
     }
 }
@@ -72,10 +72,10 @@ impl ClientActor {
         while let Some(msg) = self.recv.recv().await{
             #[allow(unreachable_patterns)]
             match msg{
-                ClientActorMessage::AddTorret { torrent_file_path, _peer_settings: _, download_path } => {
-                    //First create manager 
+                ClientActorMessage::AddTorret { torrent_file_path, peer_settings, download_path } => {
+                    //First create manager
                     let ctmi = ClientTorrentMetaInfo::from_torrent_file_path(torrent_file_path);
-                    let manager : TorrentManager = TorrentManager::new(ctmi, download_path);
+                    let manager : TorrentManager = TorrentManager::new(ctmi, download_path, peer_settings);
                     self.torrent_managers.push(manager.clone());
                     let (peer_tracker_tx, peer_tracker_rx) = tokio::sync::mpsc::channel::<TrackerResponse>(300);
                     //spawn tracker refresh
@@ -130,10 +130,11 @@ impl ClientManager{
     }
     pub async fn add_torrent(&self, torrent_file_path: String, download_path: String){
         let peer_settings = settingYaml::settingYaml::get_inner_value(
-            &self.raw_settings, 
-            vec!["client".to_string(), "peer_settings".to_string()], 
+            &self.raw_settings,
+            vec!["client".to_string(), "peer_config".to_string()],
             PeerOptions::default());
-        let _ = self.send.send(ClientActorMessage::AddTorret { torrent_file_path, _peer_settings: peer_settings, download_path }).await;
+        log::info!("Effective peer config from settings: {:?}", peer_settings);
+        let _ = self.send.send(ClientActorMessage::AddTorret { torrent_file_path, peer_settings, download_path }).await;
     }
 }
 
